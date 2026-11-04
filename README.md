@@ -1,13 +1,25 @@
 # DroidIME
 
-Native Android keyboard.
+Native Android keyboard with Thai (Kedmanee) and English layouts.
+
+## Features
+
+- Thai and English layouts, switched with the 🌐 key. Long-press 🌐 to pick another keyboard.
+- Shift with caps lock (double-tap), plus automatic capitalization in English when the field asks for it.
+- Two pages of numbers and symbols.
+- Field-aware layouts: number and phone fields open on digits; email, URL and password fields use English, with `@` or `/` next to the space bar.
+- Enter key shows the field's action (Go, Search, Send, Next, Done).
+- Delete replaces a selection, handles emoji, and repeats when held.
+- Key haptic feedback (follows the system touch-feedback setting).
+- Settings: enabled languages and keyboard height.
+- In-app update check against the latest GitHub release, and a local crash log viewer.
 
 ## Install
 
 1. Install the APK.
-2. Open DroidIME and tap **Open keyboard settings**.
-3. Enable DroidIME.
-4. Select DroidIME as the current keyboard.
+2. Open DroidIME and tap **Enable DroidIME**.
+3. Enable DroidIME in the system list.
+4. Tap **Select DroidIME** and choose it as the current keyboard.
 
 ## Build
 
@@ -16,3 +28,7 @@ gradle assembleDebug
 ```
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`
+
+## Release
+
+Pushes to `main` build a signed APK and replace the single `latest` GitHub release. The signing key is fetched from the private `droidime-key` repository, and `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` must be set as repository secrets. Pull requests only build a debug APK.
