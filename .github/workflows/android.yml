@@ -60,3 +60,4 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "DroidIME latest" \
             --notes "versionCode=${GITHUB_RUN_NUMBER}"
+          rm -f DroidIME.apk
