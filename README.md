@@ -10,8 +10,8 @@ Native Android keyboard with Thai (Kedmanee) and English layouts.
 - Field-aware layouts: number and phone fields open on digits; email, URL and password fields use English, with `@` or `/` next to the space bar.
 - Enter key shows the field's action (Go, Search, Send, Next, Done).
 - Delete replaces a selection, handles emoji, and repeats when held.
-- Key haptic feedback (follows the system touch-feedback setting).
-- Settings: enabled languages and keyboard height.
+- Corner hints on keys; long-press types them (English: symbols, Thai: the shift-layer character).
+- Settings: enabled languages, keyboard height, light/dark/system theme, vibration (with strength), key sound, auto-capitalization, double-space period, key hints, and a number row per language.
 - In-app update check against the latest GitHub release, and a local crash log viewer.
 
 ## Install

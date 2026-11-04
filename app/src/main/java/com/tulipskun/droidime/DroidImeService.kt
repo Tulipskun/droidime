@@ -1,5 +1,6 @@
 package com.tulipskun.droidime
 
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -8,10 +9,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.text.InputType
 import android.view.Gravity
-import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.SoundEffectConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -28,11 +32,48 @@ class DroidImeService : InputMethodService() {
 
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
+    private class Palette(
+        val background: Int,
+        val key: Int,
+        val special: Int,
+        val active: Int,
+        val enter: Int,
+        val text: Int,
+        val enterText: Int,
+        val hint: Int
+    )
+
+    private val lightPalette = Palette(
+        background = Color.rgb(218, 222, 230),
+        key = Color.WHITE,
+        special = Color.rgb(194, 202, 216),
+        active = Color.rgb(143, 163, 209),
+        enter = Color.rgb(91, 119, 180),
+        text = Color.rgb(34, 39, 49),
+        enterText = Color.WHITE,
+        hint = Color.rgb(105, 113, 128)
+    )
+    private val darkPalette = Palette(
+        background = Color.rgb(24, 25, 28),
+        key = Color.rgb(62, 64, 70),
+        special = Color.rgb(44, 46, 51),
+        active = Color.rgb(86, 104, 150),
+        enter = Color.rgb(96, 130, 214),
+        text = Color.rgb(234, 236, 241),
+        enterText = Color.WHITE,
+        hint = Color.rgb(160, 166, 178)
+    )
+
+    private var palette = lightPalette
+    private var darkTheme = false
+    private var appliedDark: Boolean? = null
+
     private var language = Language.THAI
     private var fieldKind = FieldKind.TEXT
     private var shifted = false
     private var shiftLocked = false
     private var lastShiftTap = 0L
+    private var lastSpaceTap = 0L
     private var symbols = false
     private var symbolPage = 0
     private var numberPad = false
@@ -59,17 +100,7 @@ class DroidImeService : InputMethodService() {
         "ม" to "ฒ", "ใ" to "ฬ", "ฝ" to "ฦ"
     )
 
-    // Small hint in the top-right corner of a key; long-press types it (like Gboard).
-    private val thaiHints = mapOf(
-        "ๅ" to "1", "/" to "2", "-" to "3", "ภ" to "4", "ถ" to "5",
-        "ค" to "6", "ต" to "7", "จ" to "8", "ข" to "9", "ช" to "0",
-        "ๆ" to "=", "ไ" to "@", "ำ" to "#", "พ" to "฿", "ะ" to "-",
-        "ร" to "&", "น" to "_", "ย" to "+", "บ" to "(", "ล" to ")",
-        "ฟ" to "\\", "ห" to "%", "ก" to "*", "ด" to "\"", "เ" to "'",
-        "า" to ":", "ส" to ";", "ว" to "!", "ง" to "?", "ฃ" to "/",
-        "ผ" to "[", "ป" to "]", "แ" to "{", "อ" to "}",
-        "ท" to "~", "ม" to "`", "ใ" to "<", "ฝ" to ">"
-    )
+    // Small hint in the top-right corner of an English key; long-press types it.
     private val englishHints = mapOf(
         "q" to "%", "w" to "\\", "e" to "|", "r" to "=", "t" to "[",
         "y" to "]", "u" to "<", "i" to ">", "o" to "{", "p" to "}",
@@ -105,11 +136,19 @@ class DroidImeService : InputMethodService() {
         getSharedPreferences("keyboard_settings", MODE_PRIVATE)
     }
 
+    @Suppress("DEPRECATION")
+    private val vibrator: Vibrator? by lazy {
+        if (Build.VERSION.SDK_INT >= 31) {
+            getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            getSystemService(VIBRATOR_SERVICE) as? Vibrator
+        }
+    }
+
     override fun onCreateInputView(): View {
         keyboard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.rgb(218, 222, 230))
             setOnApplyWindowInsetsListener { view, insets ->
                 navigationInset = insets.systemWindowInsetBottom
                 view.setPadding(dp(3), dp(8), dp(3), dp(8) + navigationInset)
@@ -120,7 +159,6 @@ class DroidImeService : InputMethodService() {
             if (Build.VERSION.SDK_INT >= 29) {
                 imeWindow.isNavigationBarContrastEnforced = false
             }
-            imeWindow.navigationBarColor = Color.rgb(218, 222, 230)
         }
         loadSettings()
         renderKeyboard()
@@ -210,21 +248,49 @@ class DroidImeService : InputMethodService() {
         }.ifEmpty { listOf(Language.THAI) }
     }
 
+    private fun refreshTheme() {
+        darkTheme = when (preferences.getString("theme", "system")) {
+            "dark" -> true
+            "light" -> false
+            else -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        palette = if (darkTheme) darkPalette else lightPalette
+        keyboard.setBackgroundColor(palette.background)
+        if (appliedDark != darkTheme) {
+            appliedDark = darkTheme
+            getWindow().window?.let { imeWindow ->
+                imeWindow.navigationBarColor = palette.background
+                if (Build.VERSION.SDK_INT >= 26) {
+                    val decor = imeWindow.decorView
+                    val flag = View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                    decor.systemUiVisibility = if (darkTheme) {
+                        decor.systemUiVisibility and flag.inv()
+                    } else {
+                        decor.systemUiVisibility or flag
+                    }
+                }
+            }
+        }
+    }
+
     private fun renderKeyboard() {
         keyboard.removeAllViews()
+        refreshTheme()
+        val numberRowEnglish = preferences.getBoolean("number_row_en", true)
+        val numberRowThai = preferences.getBoolean("number_row_th", false)
+        val showHints = preferences.getBoolean("key_hints", true)
         val rows = when {
             numberPad -> padRows
             symbols && symbolPage == 1 -> moreSymbolRows
             symbols -> symbolRows
-            language == Language.THAI -> thaiRows
-            else -> listOf(numberRow) + englishRows
+            language == Language.THAI ->
+                if (numberRowThai) listOf(numberRow) + thaiRows else thaiRows
+            else -> if (numberRowEnglish) listOf(numberRow) + englishRows else englishRows
         }
-        val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
-        val insetDp = (navigationInset / resources.displayMetrics.density).toInt()
-        val rowCount = rows.size + 1
-        val rowHeight = dp(((height - insetDp - 16 - rowCount * 4) / rowCount).coerceAtLeast(36))
         keyboard.setPadding(dp(3), dp(8), dp(3), dp(8) + navigationInset)
 
+        // Rows share the available height equally, so they always fit above the navigation bar.
         rows.forEachIndexed { index, row ->
             val line = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -255,8 +321,8 @@ class DroidImeService : InputMethodService() {
                     else -> key
                 }
                 val hint = when {
-                    symbols || numberPad -> null
-                    language == Language.THAI -> thaiHints[key]
+                    !showHints || symbols || numberPad -> null
+                    language == Language.THAI -> if (shifted) null else thaiShift[key]
                     else -> englishHints[key]
                 }
                 addKey(line, label, 1f, KeyStyle.NORMAL, hint = hint) { typeText(label) }
@@ -264,7 +330,7 @@ class DroidImeService : InputMethodService() {
             if (lastRow) {
                 addKey(line, "⌫", 1.25f, KeyStyle.SPECIAL) { deleteOne() }
             }
-            keyboard.addView(line, LinearLayout.LayoutParams(-1, rowHeight).apply {
+            keyboard.addView(line, LinearLayout.LayoutParams(-1, 0, 1f).apply {
                 bottomMargin = dp(4)
             })
         }
@@ -321,11 +387,11 @@ class DroidImeService : InputMethodService() {
                     switchLanguage()
                 }
             }
-            addKey(bottom, spaceLabel, 3.65f, KeyStyle.SPACE) { typeText(" ") }
+            addKey(bottom, spaceLabel, 3.65f, KeyStyle.SPACE) { typeSpace() }
             addKey(bottom, rightSide, 0.7f, KeyStyle.NORMAL) { typeText(rightSide) }
             addKey(bottom, enterLabel(), 1.3f, KeyStyle.ENTER) { sendEnter() }
         }
-        keyboard.addView(bottom, LinearLayout.LayoutParams(-1, rowHeight))
+        keyboard.addView(bottom, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 
     private enum class KeyStyle { NORMAL, SPECIAL, ACTIVE, SPACE, ENTER }
@@ -339,14 +405,15 @@ class DroidImeService : InputMethodService() {
         longPress: (() -> Unit)? = null,
         action: () -> Unit
     ) {
+        val colors = palette
         val key = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 setColor(when (style) {
-                    KeyStyle.NORMAL -> Color.WHITE
-                    KeyStyle.SPECIAL -> Color.rgb(194, 202, 216)
-                    KeyStyle.ACTIVE -> Color.rgb(143, 163, 209)
-                    KeyStyle.SPACE -> Color.WHITE
-                    KeyStyle.ENTER -> Color.rgb(91, 119, 180)
+                    KeyStyle.NORMAL -> colors.key
+                    KeyStyle.SPECIAL -> colors.special
+                    KeyStyle.ACTIVE -> colors.active
+                    KeyStyle.SPACE -> colors.key
+                    KeyStyle.ENTER -> colors.enter
                 })
                 cornerRadius = dp(7).toFloat()
             }
@@ -373,7 +440,7 @@ class DroidImeService : InputMethodService() {
                 label.length > 1 -> 14f
                 else -> 20f
             }
-            setTextColor(if (style == KeyStyle.ENTER) Color.WHITE else Color.rgb(34, 39, 49))
+            setTextColor(if (style == KeyStyle.ENTER) colors.enterText else colors.text)
             typeface = Typeface.DEFAULT
             isSingleLine = true
         }, FrameLayout.LayoutParams(-1, -1))
@@ -381,7 +448,7 @@ class DroidImeService : InputMethodService() {
             key.addView(TextView(this).apply {
                 text = hint
                 textSize = 10f
-                setTextColor(Color.rgb(105, 113, 128))
+                setTextColor(colors.hint)
                 isSingleLine = true
             }, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(2)
@@ -391,7 +458,7 @@ class DroidImeService : InputMethodService() {
 
         val longAction: (() -> Unit)? = longPress ?: hint?.let { value -> { typeText(value) } }
         key.setOnClickListener {
-            key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            keyFeedback(key)
             action()
         }
         if (label == "⌫") {
@@ -420,7 +487,7 @@ class DroidImeService : InputMethodService() {
             }
         } else if (longAction != null) {
             key.setOnLongClickListener {
-                key.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                keyFeedback(key)
                 longAction()
                 true
             }
@@ -429,6 +496,26 @@ class DroidImeService : InputMethodService() {
             marginStart = dp(2)
             marginEnd = dp(2)
         })
+    }
+
+    @Suppress("DEPRECATION")
+    private fun keyFeedback(view: View) {
+        if (preferences.getBoolean("haptics", true)) {
+            val duration = preferences.getInt("haptic_ms", 15).coerceIn(5, 50).toLong()
+            val device = vibrator
+            if (device != null && device.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    device.vibrate(
+                        VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE)
+                    )
+                } else {
+                    device.vibrate(duration)
+                }
+            }
+        }
+        if (preferences.getBoolean("key_sound", false)) {
+            view.playSoundEffect(SoundEffectConstants.CLICK)
+        }
     }
 
     private fun stopDeleteRepeat() {
@@ -473,6 +560,7 @@ class DroidImeService : InputMethodService() {
 
     // English capitalises after sentence ends when the field asks for it.
     private fun computeAutoShift(): Boolean {
+        if (!preferences.getBoolean("auto_caps", true)) return false
         if (symbols || numberPad || language != Language.ENGLISH) return false
         val type = currentInputEditorInfo?.inputType ?: return false
         if (type == InputType.TYPE_NULL) return false
@@ -491,6 +579,26 @@ class DroidImeService : InputMethodService() {
     private fun typeText(value: String) {
         currentInputConnection?.commitText(value, 1)
         afterTextChanged()
+    }
+
+    // Two quick spaces after a word become ". " (English only).
+    private fun typeSpace() {
+        val connection = currentInputConnection ?: return
+        val now = SystemClock.uptimeMillis()
+        if (language == Language.ENGLISH &&
+            preferences.getBoolean("double_space_period", true) &&
+            now - lastSpaceTap < 400L) {
+            val before = connection.getTextBeforeCursor(2, 0)
+            if (before != null && before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()) {
+                connection.deleteSurroundingText(1, 0)
+                connection.commitText(". ", 1)
+                lastSpaceTap = 0L
+                afterTextChanged()
+                return
+            }
+        }
+        lastSpaceTap = now
+        typeText(" ")
     }
 
     private fun deleteOne(updateShift: Boolean = true) {

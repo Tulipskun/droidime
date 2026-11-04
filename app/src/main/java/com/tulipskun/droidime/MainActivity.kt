@@ -27,8 +27,11 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -167,6 +170,62 @@ class MainActivity : Activity() {
         })
         content.addView(sizeCard, sectionParams())
 
+        val themeCard = card()
+        themeCard.addView(sectionTitle("Keyboard theme"))
+        val currentTheme = preferences.getString("theme", "system")
+        val themeGroup = RadioGroup(this).apply { orientation = LinearLayout.VERTICAL }
+        listOf("system" to "Follow system", "light" to "Light", "dark" to "Dark").forEach { (value, name) ->
+            themeGroup.addView(RadioButton(this).apply {
+                id = View.generateViewId()
+                text = name
+                textSize = 15f
+                tag = value
+                isChecked = value == currentTheme
+            })
+        }
+        themeGroup.setOnCheckedChangeListener { group, checkedId ->
+            val value = group.findViewById<RadioButton>(checkedId)?.tag as? String
+            if (value != null) preferences.edit().putString("theme", value).apply()
+        }
+        themeCard.addView(themeGroup)
+        content.addView(themeCard, sectionParams())
+
+        val feedbackCard = card()
+        feedbackCard.addView(sectionTitle("Feedback"))
+        feedbackCard.addView(prefSwitch("Vibrate on key press", "haptics", true))
+        val currentStrength = preferences.getInt("haptic_ms", 15).coerceIn(5, 50)
+        val strengthLabel = TextView(this).apply {
+            text = "Vibration strength · $currentStrength ms"
+            textSize = 13f
+            setTextColor(Color.rgb(105, 113, 128))
+            setPadding(0, dp(6), 0, 0)
+        }
+        feedbackCard.addView(strengthLabel)
+        feedbackCard.addView(SeekBar(this).apply {
+            max = 45
+            progress = currentStrength - 5
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val ms = 5 + progress
+                    strengthLabel.text = "Vibration strength · $ms ms"
+                    preferences.edit().putInt("haptic_ms", ms).apply()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        })
+        feedbackCard.addView(prefSwitch("Sound on key press", "key_sound", false))
+        content.addView(feedbackCard, sectionParams())
+
+        val typingCard = card()
+        typingCard.addView(sectionTitle("Typing"))
+        typingCard.addView(prefSwitch("Auto-capitalize (English)", "auto_caps", true))
+        typingCard.addView(prefSwitch("Double space inserts a period (English)", "double_space_period", true))
+        typingCard.addView(prefSwitch("Show key hints (long-press to type)", "key_hints", true))
+        typingCard.addView(prefSwitch("Number row on English keyboard", "number_row_en", true))
+        typingCard.addView(prefSwitch("Number row on Thai keyboard", "number_row_th", false))
+        content.addView(typingCard, sectionParams())
+
         val updateCard = card()
         updateCard.addView(sectionTitle("App update"))
         status = TextView(this).apply {
@@ -278,6 +337,16 @@ class MainActivity : Activity() {
         setOnClickListener { action() }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
             topMargin = dp(7)
+        }
+    }
+
+    private fun prefSwitch(label: String, key: String, default: Boolean) = Switch(this).apply {
+        text = label
+        textSize = 15f
+        setPadding(0, dp(6), 0, dp(6))
+        isChecked = preferences.getBoolean(key, default)
+        setOnCheckedChangeListener { _, checked ->
+            preferences.edit().putBoolean(key, checked).apply()
         }
     }
 
