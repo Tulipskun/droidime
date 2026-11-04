@@ -93,6 +93,8 @@ class DroidImeService : InputMethodService() {
     private var keyboardView: KeyboardCanvasView? = null
     private val deleteHandler = Handler(Looper.getMainLooper())
     private var deleteRepeat: Runnable? = null
+    private var deleteHold: Runnable? = null
+    private var deleteSpeedMs = DELETE_START_MS
 
     private val thaiRows = listOf(
         listOf("ๅ", "/", "_", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
@@ -327,6 +329,8 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun stopDeleteRepeat() {
+        deleteHold?.let { deleteHandler.removeCallbacks(it) }
+        deleteHold = null
         deleteRepeat?.let { deleteHandler.removeCallbacks(it) }
         deleteRepeat = null
     }
@@ -592,7 +596,9 @@ class DroidImeService : InputMethodService() {
                 val lastRow = index == rows.lastIndex && !numberPad
                 val slots = mutableListOf<Pair<Float, Cell?>>()
                 if (row.size == 9) slots.add(0.5f to null)
-                val specialWidth = if (row.size == 7) 1.5f else 1.25f
+                // English/symbols last rows have wide shift/delete (1.5); the Thai last row is a
+                // 12-column grid where shift/delete must match the letters (1.0) to stay aligned.
+                val specialWidth = if (row.size == 7) 1.5f else 1f
                 if (lastRow) {
                     if (symbols) slots.add(specialWidth to pageKeyCell())
                     else slots.add(specialWidth to shiftCell())
@@ -935,7 +941,7 @@ class DroidImeService : InputMethodService() {
                     if (cell != null) {
                         keyFeedback(this)
                         if (cell.isDelete) {
-                            startDeleteRepeat()
+                            beginDelete()
                         } else {
                             cell.longAction?.let { action ->
                                 val runnable = Runnable {
@@ -954,6 +960,7 @@ class DroidImeService : InputMethodService() {
                     if (cell !== pressed) {
                         pressed = cell
                         cancelPendingLongPress()
+                        stopDeleteRepeat()
                         invalidate()
                     }
                     return true
@@ -965,7 +972,8 @@ class DroidImeService : InputMethodService() {
                     val cell = pressed
                     pressed = null
                     invalidate()
-                    if (cell != null && !longPressFired && cellAt(event.x, event.y) === cell) {
+                    if (cell != null && !longPressFired && !cell.isDelete &&
+                        cellAt(event.x, event.y) === cell) {
                         cell.action()
                     }
                     if (wasRepeating) post { afterTextChanged() }
@@ -991,17 +999,27 @@ class DroidImeService : InputMethodService() {
             return null
         }
 
-        private fun startDeleteRepeat() {
-            stopDeleteRepeat()
+        // Press deletes once for a tap; a hold waits out an initial delay then repeats,
+        // speeding up as the hold continues.
+        private fun beginDelete() {
             deleteOne(updateShift = false)
+            deleteSpeedMs = DELETE_START_MS
+            val hold = Runnable { startDeleteRepeat() }
+            deleteHold = hold
+            deleteHandler.postDelayed(hold, DELETE_INITIAL_DELAY_MS)
+        }
+
+        private fun startDeleteRepeat() {
+            deleteHold = null
             val repeat = object : Runnable {
                 override fun run() {
                     deleteOne(updateShift = false)
-                    deleteHandler.postDelayed(this, 55)
+                    deleteSpeedMs = (deleteSpeedMs - DELETE_ACCEL_STEP).coerceAtLeast(DELETE_MIN_MS)
+                    deleteRepeat = this
+                    deleteHandler.postDelayed(this, deleteSpeedMs.toLong())
                 }
             }
-            deleteRepeat = repeat
-            deleteHandler.postDelayed(repeat, 280)
+            repeat.run()
         }
 
         private fun cancelPendingLongPress() {
@@ -1066,5 +1084,10 @@ class DroidImeService : InputMethodService() {
         private val SETTINGS_KEYS = setOf(
             "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints"
         )
+
+        private const val DELETE_INITIAL_DELAY_MS = 400L
+        private const val DELETE_START_MS = 60
+        private const val DELETE_ACCEL_STEP = 3
+        private const val DELETE_MIN_MS = 15
     }
 }
