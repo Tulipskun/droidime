@@ -257,7 +257,7 @@ class DroidImeService : InputMethodService() {
         val enabled = enabledLanguages()
         val saved = preferences.getString("current_language", language.code)
         language = enabled.firstOrNull { it.code == saved } ?: enabled.first()
-        val height = preferences.getInt("keyboard_height_dp", 300).coerceIn(220, 360)
+        val height = preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360)
         val target = view ?: return
         val params = target.layoutParams ?: ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -463,6 +463,8 @@ class DroidImeService : InputMethodService() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    private fun dpf(value: Float): Float = value * resources.displayMetrics.density
+
     private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
 
     // A single drawn key. The rect is filled in during layout; null spacer slots have no cell.
@@ -475,7 +477,9 @@ class DroidImeService : InputMethodService() {
         val icon: ToolIcon? = null,
         val emojiFace: Boolean = false,
         val isDelete: Boolean = false,
-        val rect: RectF = RectF()
+        val rect: RectF = RectF(),
+        // Gap-free hit area: tiles the whole keyboard so no tap lands on dead space.
+        val touchRect: RectF = RectF()
     ) {
         val contentDescription: String = describe(label, style)
 
@@ -514,7 +518,7 @@ class DroidImeService : InputMethodService() {
         }
         private val iconFill = Paint(Paint.ANTI_ALIAS_FLAG)
         private val shape = GradientDrawable()
-        private val cornerRadius = dp(7).toFloat()
+        private val cornerRadius = dpf(6f)
 
         var cells: List<Cell> = emptyList()
             private set
@@ -542,7 +546,7 @@ class DroidImeService : InputMethodService() {
         // whenever the IME measures this view with anything other than an exact size.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val w = MeasureSpec.getSize(widthMeasureSpec)
-            val desired = dp(preferences.getInt("keyboard_height_dp", 300).coerceIn(220, 360))
+            val desired = dp(preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360))
             val h = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
                 MeasureSpec.getSize(heightMeasureSpec)
             } else {
@@ -599,7 +603,7 @@ class DroidImeService : InputMethodService() {
                 built.add(slots)
             }
             built.add(bottomRow())
-            built.add(0, toolbarRow())
+            // Toolbar row is intentionally skipped until the keyboard itself is finalised.
             return built
         }
 
@@ -686,14 +690,14 @@ class DroidImeService : InputMethodService() {
                     language == Language.THAI -> "ไทย"
                     else -> "English"
                 }
-                slots.add(1.3f to Cell(if (symbols) "ABC" else "?123", KeyStyle.SPECIAL, null, action = {
+                slots.add(1.5f to Cell(if (symbols) "ABC" else "?123", KeyStyle.SPECIAL, null, action = {
                     symbols = !symbols
                     symbolPage = 0
                     if (!shiftLocked) shifted = computeAutoShift()
                     renderKeyboard()
                 }))
                 val emojiKey = leftSide == ","
-                slots.add(0.8f to Cell(
+                slots.add(1f to Cell(
                     if (emojiKey) "" else leftSide,
                     KeyStyle.NORMAL, null,
                     emojiFace = emojiKey,
@@ -711,8 +715,8 @@ class DroidImeService : InputMethodService() {
                         longAction = { showKeyboardPicker() },
                         action = { switchLanguage() }))
                 }
-                slots.add(4.3f to Cell(spaceLabel, KeyStyle.SPACE, null, action = { typeSpace() }))
-                slots.add(0.8f to Cell(rightSide, KeyStyle.NORMAL, null, action = { typeText(rightSide) }))
+                slots.add(4f to Cell(spaceLabel, KeyStyle.SPACE, null, action = { typeSpace() }))
+                slots.add(1f to Cell(rightSide, KeyStyle.NORMAL, null, action = { typeText(rightSide) }))
                 slots.add(1.5f to enterCell())
             }
             return slots
@@ -727,36 +731,41 @@ class DroidImeService : InputMethodService() {
                 cells = flat
                 return
             }
-            val padX = dp(3)
-            val padTop = dp(8)
-            val padBottom = dp(8) + navigationInset
-            val gap = dp(4)
-            val keyGap = dp(2)
-            val availW = (width - padX * 2).toFloat()
-            val availH = (height - padTop - padBottom).toFloat()
-            val factors = rows.map { row ->
-                if (row.any { it.second?.style == KeyStyle.TOOLBAR }) 0.55f else 1f
-            }
-            val totalFactor = factors.sum().coerceAtLeast(1f)
-            val contentH = (availH - gap * (rows.size - 1)).coerceAtLeast(1f)
-            var top = padTop.toFloat()
+            val padX = dpf(6.4f)
+            val padTop = dpf(4f)
+            val padBottom = dpf(8f) + navigationInset
+            val gap = dpf(8f)
+            val keyGap = dpf(2.5f)
+            val availW = (width - padX * 2f).coerceAtLeast(1f)
+            val availH = (height - padTop - padBottom).coerceAtLeast(1f)
+            val rowH = ((availH - gap * (rows.size - 1)) / rows.size).coerceAtLeast(1f)
+            val lastRow = rows.lastIndex
             rows.forEachIndexed { index, row ->
-                val rowH = contentH * factors[index] / totalFactor
+                val top = padTop + index * (rowH + gap)
+                val bottom = top + rowH
+                // Vertical touch band reaches to the gap midpoint so rows tile with no dead strip;
+                // the first and last bands extend to the view edges.
+                val bandTop = if (index == 0) 0f else top - gap / 2f
+                val bandBottom = if (index == lastRow) height.toFloat() else bottom + gap / 2f
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat()
-                if (totalWeight > 0f) {
-                    val unit = availW / totalWeight
-                    var x = padX.toFloat()
-                    val bottom = top + rowH
-                    row.forEach { (weight, cell) ->
-                        val slotRight = x + weight * unit
-                        if (cell != null) {
-                            cell.rect.set(x + keyGap, top, slotRight - keyGap, bottom)
-                            flat.add(cell)
-                        }
-                        x = slotRight
+                if (totalWeight <= 0f) return@forEachIndexed
+                val unit = availW / totalWeight
+                val firstReal = row.indexOfFirst { it.second != null }
+                val lastReal = row.indexOfLast { it.second != null }
+                var x = padX
+                row.forEachIndexed { slotIndex, (weight, cell) ->
+                    val slotRight = x + weight * unit
+                    if (cell != null) {
+                        cell.rect.set(x + keyGap, top, slotRight - keyGap, bottom)
+                        // Horizontal touch spans the full slot; the outermost keys also absorb
+                        // the side padding and any indent spacer so the whole row is clickable.
+                        val touchLeft = if (slotIndex == firstReal) 0f else x
+                        val touchRight = if (slotIndex == lastReal) width.toFloat() else slotRight
+                        cell.touchRect.set(touchLeft, bandTop, touchRight, bandBottom)
+                        flat.add(cell)
                     }
+                    x = slotRight
                 }
-                top += rowH + gap
             }
             cells = flat
         }
@@ -977,7 +986,7 @@ class DroidImeService : InputMethodService() {
 
         private fun cellAt(x: Float, y: Float): Cell? {
             for (cell in cells) {
-                if (cell.rect.contains(x, y)) return cell
+                if (cell.touchRect.contains(x, y)) return cell
             }
             return null
         }
