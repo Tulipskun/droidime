@@ -12,9 +12,11 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.view.Gravity
-import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -27,6 +29,10 @@ class MainActivity : Activity() {
     private lateinit var updateButton: Button
     private var downloadId = -1L
     private var receiverRegistered = false
+
+    private val preferences by lazy {
+        getSharedPreferences("keyboard_settings", MODE_PRIVATE)
+    }
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -51,8 +57,8 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(28, 32, 28, 32)
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(28, 24, 28, 24)
             setBackgroundColor(0xFFF4F5F8.toInt())
         }
 
@@ -68,7 +74,7 @@ class MainActivity : Activity() {
             textSize = 16f
             setTextColor(0xFF596174.toInt())
             gravity = Gravity.CENTER
-            setPadding(0, 16, 0, 24)
+            setPadding(0, 12, 0, 16)
         })
 
         root.addView(Button(this).apply {
@@ -84,12 +90,73 @@ class MainActivity : Activity() {
             }
         })
 
+        root.addView(TextView(this).apply {
+            text = getString(R.string.languages_title)
+            textSize = 20f
+            setTextColor(0xFF182033.toInt())
+            setPadding(0, 20, 0, 4)
+        })
+
+        val thaiEnabled = preferences.getBoolean("language_th", true)
+        val englishEnabled = preferences.getBoolean("language_en", true)
+
+        val thaiCheck = CheckBox(this).apply {
+            text = getString(R.string.thai)
+            isChecked = thaiEnabled
+            setTextColor(0xFF182033.toInt())
+        }
+        val englishCheck = CheckBox(this).apply {
+            text = getString(R.string.english)
+            isChecked = englishEnabled
+            setTextColor(0xFF182033.toInt())
+        }
+
+        thaiCheck.setOnCheckedChangeListener { _, checked ->
+            if (!checked && !englishCheck.isChecked) {
+                thaiCheck.isChecked = true
+            } else {
+                preferences.edit().putBoolean("language_th", checked).apply()
+            }
+        }
+        englishCheck.setOnCheckedChangeListener { _, checked ->
+            if (!checked && !thaiCheck.isChecked) {
+                englishCheck.isChecked = true
+            } else {
+                preferences.edit().putBoolean("language_en", checked).apply()
+            }
+        }
+        root.addView(thaiCheck)
+        root.addView(englishCheck)
+
+        val currentHeight = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
+        val heightLabel = TextView(this).apply {
+            text = getString(R.string.keyboard_height, currentHeight)
+            textSize = 16f
+            setTextColor(0xFF182033.toInt())
+            setPadding(0, 16, 0, 4)
+        }
+        root.addView(heightLabel)
+
+        root.addView(SeekBar(this).apply {
+            max = 140
+            progress = currentHeight - 220
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val height = 220 + progress
+                    heightLabel.text = getString(R.string.keyboard_height, height)
+                    preferences.edit().putInt("keyboard_height_dp", height).apply()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        })
+
         status = TextView(this).apply {
             text = getString(R.string.update_current, BuildConfig.VERSION_NAME)
             textSize = 14f
             setTextColor(0xFF596174.toInt())
             gravity = Gravity.CENTER
-            setPadding(0, 24, 0, 8)
+            setPadding(0, 20, 0, 8)
         }
         root.addView(status)
 
@@ -99,7 +166,10 @@ class MainActivity : Activity() {
         }
         root.addView(updateButton)
 
-        setContentView(root)
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        })
     }
 
     private fun checkForUpdate() {
