@@ -8,7 +8,6 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.TextView
 
 class DroidImeService : InputMethodService() {
     private enum class Language { THAI, ENGLISH }
@@ -45,7 +44,7 @@ class DroidImeService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        shifted = info?.inputType?.and(android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES) != 0
+        shifted = ((info?.inputType ?: 0) and android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES) != 0
         if (::keyboard.isInitialized) renderKeyboard()
     }
 
@@ -61,7 +60,10 @@ class DroidImeService : InputMethodService() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
             }
-            if (index == 2) addKey(line, if (shifted) "⇧" else "↑", 1.25f) { shifted = !shifted; renderKeyboard() }
+            if (index == 2) addKey(line, if (shifted) "⇧" else "↑", 1.25f) {
+                shifted = !shifted
+                renderKeyboard()
+            }
             row.forEach { key ->
                 val label = if (language == Language.ENGLISH && shifted && !symbols) key.uppercase() else key
                 addKey(line, label, 1f) { commitKey(label) }
@@ -87,7 +89,7 @@ class DroidImeService : InputMethodService() {
             renderKeyboard()
         }
         addKey(bottom, ",", 0.7f) { currentInputConnection?.commitText(",", 1) }
-        addKey(bottom, "English/ไทย", 3.8f) {
+        addKey(bottom, "space", 3.8f) {
             currentInputConnection?.commitText(" ", 1)
         }
         addKey(bottom, ".", 0.7f) { currentInputConnection?.commitText(".", 1) }
@@ -108,7 +110,7 @@ class DroidImeService : InputMethodService() {
             minimumHeight = 0
             setPadding(0, 0, 0, 0)
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(if (label == "↵" || label == "English/ไทย") Color.rgb(174, 190, 222) else Color.WHITE)
+                setColor(if (label == "↵" || label == "space") Color.rgb(174, 190, 222) else Color.WHITE)
                 cornerRadius = 8f
             }
             setOnClickListener { action() }
