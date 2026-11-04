@@ -731,6 +731,17 @@ class DroidImeService : InputMethodService() {
         private fun enterCell(): Cell =
             Cell(enterLabel(), KeyStyle.ENTER, null, action = { sendEnter() })
 
+        // Row count of the language's letters page (content rows + optional number row + bottom),
+        // used as the fixed reference for key height across every page.
+        private fun referenceRowCount(): Int {
+            val letterRows = if (language == Language.THAI) thaiRows.size else englishRows.size
+            val numberRowOn = preferences.getBoolean(
+                if (language == Language.THAI) "number_row_th" else "number_row_en",
+                if (language == Language.THAI) false else true
+            )
+            return letterRows + (if (numberRowOn) 1 else 0) + 1
+        }
+
         private fun layoutRows(rows: List<List<Pair<Float, Cell?>>>) {
             val flat = mutableListOf<Cell>()
             if (rows.isEmpty()) {
@@ -744,10 +755,17 @@ class DroidImeService : InputMethodService() {
             val keyGap = dpf(2.5f)
             val availW = (width - padX * 2f).coerceAtLeast(1f)
             val availH = (height - padTop - padBottom).coerceAtLeast(1f)
-            val rowH = ((availH - gap * (rows.size - 1)) / rows.size).coerceAtLeast(1f)
+            // Key height comes from the language's letters page, not the current page's row count.
+            // The symbols and number-pad pages have fewer rows, so sizing off rows.size would grow
+            // the bottom row when switching pages; anchoring to the bottom leaves the extra space on
+            // top instead, keeping the bottom row the same size everywhere.
+            val refRows = referenceRowCount()
+            val rowH = ((availH - gap * (refRows - 1)) / refRows).coerceAtLeast(1f)
             val lastRow = rows.lastIndex
+            val blockH = rows.size * rowH + gap * lastRow
+            val startTop = padTop + (availH - blockH).coerceAtLeast(0f)
             rows.forEachIndexed { index, row ->
-                val top = padTop + index * (rowH + gap)
+                val top = startTop + index * (rowH + gap)
                 val bottom = top + rowH
                 // Vertical touch band reaches to the gap midpoint so rows tile with no dead strip;
                 // the first and last bands extend to the view edges.
