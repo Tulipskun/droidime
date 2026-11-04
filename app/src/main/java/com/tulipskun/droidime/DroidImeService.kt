@@ -1,10 +1,13 @@
 package com.tulipskun.droidime
 
 import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -37,7 +40,9 @@ class DroidImeService : InputMethodService() {
 
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
-    private enum class KeyStyle { NORMAL, SPECIAL, ACTIVE, SPACE, ENTER }
+    private enum class KeyStyle { NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR }
+
+    private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
 
     private class Palette(
         val background: Int,
@@ -90,13 +95,13 @@ class DroidImeService : InputMethodService() {
     private var deleteRepeat: Runnable? = null
 
     private val thaiRows = listOf(
-        listOf("ๅ", "/", "-", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
+        listOf("ๅ", "/", "_", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
         listOf("ๆ", "ไ", "ำ", "พ", "ะ", "ั", "ี", "ร", "น", "ย", "บ", "ล"),
         listOf("ฟ", "ห", "ก", "ด", "เ", "้", "่", "า", "ส", "ว", "ง", "ฃ"),
         listOf("ผ", "ป", "แ", "อ", "ิ", "ื", "ท", "ม", "ใ", "ฝ")
     )
     private val thaiShift = mapOf(
-        "ๅ" to "+", "/" to "๑", "-" to "๒", "ภ" to "๓", "ถ" to "๔",
+        "ๅ" to "+", "/" to "๑", "_" to "๒", "ภ" to "๓", "ถ" to "๔",
         "ุ" to "ู", "ึ" to "฿", "ค" to "๕", "ต" to "๖", "จ" to "๗", "ข" to "๘", "ช" to "๙",
         "ๆ" to "๐", "ไ" to "\"", "ำ" to "ฎ", "พ" to "ฑ", "ะ" to "ธ",
         "ั" to "ํ", "ี" to "๊", "ร" to "ณ", "น" to "ฯ", "ย" to "ญ",
@@ -141,6 +146,25 @@ class DroidImeService : InputMethodService() {
 
     private val preferences by lazy {
         getSharedPreferences("keyboard_settings", MODE_PRIVATE)
+    }
+
+    private val settingsHandler = Handler(Looper.getMainLooper())
+
+    // Settings changes must reach the live keyboard without reopening the field.
+    private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == null || key in SETTINGS_KEYS) {
+            settingsHandler.post {
+                loadSettings()
+                refreshTheme()
+                keyboardView?.requestLayout()
+                keyboardView?.rebuild()
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        preferences.registerOnSharedPreferenceChangeListener(prefListener)
     }
 
     @Suppress("DEPRECATION")
@@ -204,6 +228,7 @@ class DroidImeService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         stopDeleteRepeat()
         keyboardView = null
         super.onDestroy()
@@ -232,7 +257,7 @@ class DroidImeService : InputMethodService() {
         val enabled = enabledLanguages()
         val saved = preferences.getString("current_language", language.code)
         language = enabled.firstOrNull { it.code == saved } ?: enabled.first()
-        val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
+        val height = preferences.getInt("keyboard_height_dp", 300).coerceIn(220, 360)
         val target = view ?: return
         val params = target.layoutParams ?: ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -341,6 +366,17 @@ class DroidImeService : InputMethodService() {
         manager.showInputMethodPicker()
     }
 
+    private fun openSettings() {
+        val intent = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+    }
+
+    // Toolbar emoji key: tap types a comma, long-press opens the picker (not built yet).
+    private fun showEmoji() {
+        android.widget.Toast.makeText(this, "Emoji picker coming soon", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     // English capitalises after sentence ends when the field asks for it.
     private fun computeAutoShift(): Boolean {
         if (!preferences.getBoolean("auto_caps", true)) return false
@@ -436,6 +472,8 @@ class DroidImeService : InputMethodService() {
         val hint: String?,
         val action: () -> Unit,
         val longAction: (() -> Unit)? = null,
+        val icon: ToolIcon? = null,
+        val emojiFace: Boolean = false,
         val isDelete: Boolean = false,
         val rect: RectF = RectF()
     ) {
@@ -466,9 +504,15 @@ class DroidImeService : InputMethodService() {
             typeface = Typeface.DEFAULT
         }
         private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textAlign = Paint.Align.LEFT
+            textAlign = Paint.Align.RIGHT
             typeface = Typeface.DEFAULT
         }
+        private val iconStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        private val iconFill = Paint(Paint.ANTI_ALIAS_FLAG)
         private val shape = GradientDrawable()
         private val cornerRadius = dp(7).toFloat()
 
@@ -498,7 +542,7 @@ class DroidImeService : InputMethodService() {
         // whenever the IME measures this view with anything other than an exact size.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val w = MeasureSpec.getSize(widthMeasureSpec)
-            val desired = dp(preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360))
+            val desired = dp(preferences.getInt("keyboard_height_dp", 300).coerceIn(220, 360))
             val h = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
                 MeasureSpec.getSize(heightMeasureSpec)
             } else {
@@ -555,7 +599,21 @@ class DroidImeService : InputMethodService() {
                 built.add(slots)
             }
             built.add(bottomRow())
+            built.add(0, toolbarRow())
             return built
+        }
+
+        private fun toolbarRow(): List<Pair<Float, Cell?>> {
+            fun tool(icon: ToolIcon, name: String, action: () -> Unit): Pair<Float, Cell?> =
+                1f to Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = action)
+            return listOf(
+                tool(ToolIcon.GRID, "Apps", {}),
+                tool(ToolIcon.UNDO, "Undo", {}),
+                tool(ToolIcon.TRANSLATE, "Translate", {}),
+                tool(ToolIcon.CLIPBOARD, "Clipboard", {}),
+                tool(ToolIcon.SETTINGS, "Keyboard settings") { openSettings() },
+                tool(ToolIcon.SELECT, "Select text", {})
+            )
         }
 
         private fun letterCell(key: String): Cell {
@@ -634,7 +692,14 @@ class DroidImeService : InputMethodService() {
                     if (!shiftLocked) shifted = computeAutoShift()
                     renderKeyboard()
                 }))
-                slots.add(0.8f to Cell(leftSide, KeyStyle.NORMAL, null, action = { typeText(leftSide) }))
+                val emojiKey = leftSide == ","
+                slots.add(0.8f to Cell(
+                    if (emojiKey) "" else leftSide,
+                    KeyStyle.NORMAL, null,
+                    emojiFace = emojiKey,
+                    action = { typeText(leftSide) },
+                    longAction = if (emojiKey) ({ showEmoji() }) else null
+                ))
                 if (symbols) {
                     slots.add(1f to Cell(NUMBER_PAD, KeyStyle.SPECIAL, null, action = {
                         symbols = false
@@ -669,28 +734,39 @@ class DroidImeService : InputMethodService() {
             val keyGap = dp(2)
             val availW = (width - padX * 2).toFloat()
             val availH = (height - padTop - padBottom).toFloat()
-            val rowH = ((availH - gap * (rows.size - 1)) / rows.size).coerceAtLeast(1f)
+            val factors = rows.map { row ->
+                if (row.any { it.second?.style == KeyStyle.TOOLBAR }) 0.55f else 1f
+            }
+            val totalFactor = factors.sum().coerceAtLeast(1f)
+            val contentH = (availH - gap * (rows.size - 1)).coerceAtLeast(1f)
+            var top = padTop.toFloat()
             rows.forEachIndexed { index, row ->
+                val rowH = contentH * factors[index] / totalFactor
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat()
-                if (totalWeight <= 0f) return@forEachIndexed
-                val unit = availW / totalWeight
-                var x = padX.toFloat()
-                val top = padTop + index * (rowH + gap)
-                val bottom = top + rowH
-                row.forEach { (weight, cell) ->
-                    val slotRight = x + weight * unit
-                    if (cell != null) {
-                        cell.rect.set(x + keyGap, top, slotRight - keyGap, bottom)
-                        flat.add(cell)
+                if (totalWeight > 0f) {
+                    val unit = availW / totalWeight
+                    var x = padX.toFloat()
+                    val bottom = top + rowH
+                    row.forEach { (weight, cell) ->
+                        val slotRight = x + weight * unit
+                        if (cell != null) {
+                            cell.rect.set(x + keyGap, top, slotRight - keyGap, bottom)
+                            flat.add(cell)
+                        }
+                        x = slotRight
                     }
-                    x = slotRight
                 }
+                top += rowH + gap
             }
             cells = flat
         }
 
         private fun drawCell(canvas: Canvas, cell: Cell) {
             val colors = palette
+            if (cell.style == KeyStyle.TOOLBAR) {
+                drawToolbarIcon(canvas, cell, colors)
+                return
+            }
             shape.setColor(
                 if (cell === pressed) colors.active else when (cell.style) {
                     KeyStyle.NORMAL -> colors.key
@@ -698,6 +774,7 @@ class DroidImeService : InputMethodService() {
                     KeyStyle.ACTIVE -> colors.active
                     KeyStyle.SPACE -> colors.key
                     KeyStyle.ENTER -> colors.enter
+                    KeyStyle.TOOLBAR -> colors.background
                 }
             )
             shape.setBounds(
@@ -707,18 +784,22 @@ class DroidImeService : InputMethodService() {
             shape.cornerRadius = cornerRadius
             shape.draw(canvas)
 
-            textPaint.color = if (cell.style == KeyStyle.ENTER) colors.enterText else colors.text
-            textPaint.textSize = sp(
-                when {
-                    cell.style == KeyStyle.SPACE -> 12f
-                    cell.label.length > 4 -> 11f
-                    cell.label.length > 1 -> 14f
-                    else -> 20f
-                }
-            )
-            val metrics = textPaint.fontMetrics
-            val baseline = cell.rect.centerY() - (metrics.ascent + metrics.descent) / 2f
-            canvas.drawText(cell.label, cell.rect.centerX(), baseline, textPaint)
+            if (cell.emojiFace) {
+                drawEmojiKey(canvas, cell, colors)
+            } else {
+                textPaint.color = if (cell.style == KeyStyle.ENTER) colors.enterText else colors.text
+                textPaint.textSize = sp(
+                    when {
+                        cell.style == KeyStyle.SPACE -> 12f
+                        cell.label.length > 4 -> 11f
+                        cell.label.length > 1 -> 14f
+                        else -> 20f
+                    }
+                )
+                val metrics = textPaint.fontMetrics
+                val baseline = cell.rect.centerY() - (metrics.ascent + metrics.descent) / 2f
+                canvas.drawText(cell.label, cell.rect.centerX(), baseline, textPaint)
+            }
 
             val hint = cell.hint
             if (hint != null) {
@@ -727,10 +808,111 @@ class DroidImeService : InputMethodService() {
                 val hm = hintPaint.fontMetrics
                 canvas.drawText(
                     hint,
-                    cell.rect.left + dp(4),
+                    cell.rect.right - dp(4),
                     cell.rect.top + dp(2) - hm.ascent,
                     hintPaint
                 )
+            }
+        }
+
+        private fun drawEmojiKey(canvas: Canvas, cell: Cell, colors: Palette) {
+            val cx = cell.rect.centerX()
+            val h = cell.rect.height()
+            val faceR = h * 0.17f
+            val faceCy = cell.rect.centerY() - h * 0.12f
+            iconStroke.color = colors.text
+            iconStroke.strokeWidth = (faceR * 0.16f).coerceAtLeast(1.2f * resources.displayMetrics.density)
+            canvas.drawCircle(cx, faceCy, faceR, iconStroke)
+            val eyeY = faceCy - faceR * 0.28f
+            val eyeDx = faceR * 0.42f
+            val eyeLen = faceR * 0.16f
+            canvas.drawLine(cx - eyeDx, eyeY - eyeLen, cx - eyeDx, eyeY + eyeLen, iconStroke)
+            canvas.drawLine(cx + eyeDx, eyeY - eyeLen, cx + eyeDx, eyeY + eyeLen, iconStroke)
+            val smile = Path().apply {
+                addArc(cx - faceR * 0.55f, faceCy - faceR * 0.1f,
+                    cx + faceR * 0.55f, faceCy + faceR * 0.72f, 25f, 130f)
+            }
+            canvas.drawPath(smile, iconStroke)
+            textPaint.color = colors.text
+            textPaint.textSize = sp(11f)
+            val m = textPaint.fontMetrics
+            canvas.drawText(",", cx, cell.rect.centerY() + h * 0.30f - (m.ascent + m.descent) / 2f, textPaint)
+        }
+
+        private fun drawToolbarIcon(canvas: Canvas, cell: Cell, colors: Palette) {
+            val color = if (cell === pressed) colors.active else colors.text
+            val cx = cell.rect.centerX()
+            val cy = cell.rect.centerY()
+            val s = minOf(cell.rect.width(), cell.rect.height()) * 0.5f
+            iconStroke.color = color
+            iconStroke.strokeWidth = (s * 0.16f).coerceAtLeast(1.6f * resources.displayMetrics.density)
+            iconFill.color = color
+            when (cell.icon) {
+                ToolIcon.GRID -> {
+                    val off = s * 0.52f
+                    val side = s * 0.34f
+                    for (dx in -1..1 step 2) for (dy in -1..1 step 2) {
+                        val x = cx + dx * off
+                        val y = cy + dy * off
+                        canvas.drawRoundRect(x - side, y - side, x + side, y + side,
+                            side * 0.6f, side * 0.6f, iconFill)
+                    }
+                }
+                ToolIcon.UNDO -> {
+                    val r = s * 0.62f
+                    val arc = Path().apply { addArc(cx - r, cy - r * 0.55f, cx + r, cy + r * 0.9f, 200f, 140f) }
+                    canvas.drawPath(arc, iconStroke)
+                    val headX = cx - r * 0.94f
+                    val headY = cy + r * 0.12f
+                    canvas.drawLine(headX, headY, headX + s * 0.34f, headY - s * 0.2f, iconStroke)
+                    canvas.drawLine(headX, headY, headX + s * 0.1f, headY + s * 0.36f, iconStroke)
+                }
+                ToolIcon.TRANSLATE -> {
+                    val top = cy - s * 0.5f
+                    canvas.drawLine(cx - s * 0.5f, cy + s * 0.1f, cx - s * 0.1f, top, iconStroke)
+                    canvas.drawLine(cx - s * 0.1f, top, cx + s * 0.3f, cy + s * 0.1f, iconStroke)
+                    canvas.drawLine(cx - s * 0.36f, cy - s * 0.12f, cx + s * 0.16f, cy - s * 0.12f, iconStroke)
+                    canvas.drawLine(cx + s * 0.32f, cy - s * 0.5f, cx + s * 0.72f, cy - s * 0.5f, iconStroke)
+                    canvas.drawLine(cx + s * 0.52f, cy - s * 0.5f, cx + s * 0.52f, cy + s * 0.1f, iconStroke)
+                    canvas.drawLine(cx + s * 0.2f, cy + s * 0.1f, cx + s * 0.84f, cy + s * 0.55f, iconStroke)
+                    canvas.drawLine(cx + s * 0.84f, cy + s * 0.1f, cx + s * 0.2f, cy + s * 0.55f, iconStroke)
+                }
+                ToolIcon.CLIPBOARD -> {
+                    val l = cx - s * 0.52f
+                    val r = cx + s * 0.52f
+                    val t = cy - s * 0.62f
+                    val b = cy + s * 0.62f
+                    canvas.drawRoundRect(l, t, r, b, s * 0.2f, s * 0.2f, iconStroke)
+                    canvas.drawRoundRect(cx - s * 0.24f, t - s * 0.22f, cx + s * 0.24f, t + s * 0.16f,
+                        s * 0.12f, s * 0.12f, iconFill)
+                    val lineL = l + s * 0.2f
+                    val lineR = r - s * 0.2f
+                    canvas.drawLine(lineL, cy - s * 0.1f, lineR, cy - s * 0.1f, iconStroke)
+                    canvas.drawLine(lineL, cy + s * 0.2f, lineR, cy + s * 0.2f, iconStroke)
+                }
+                ToolIcon.SETTINGS -> {
+                    val r = s * 0.42f
+                    canvas.drawCircle(cx, cy, r, iconStroke)
+                    canvas.drawCircle(cx, cy, r * 0.4f, iconStroke)
+                    for (i in 0 until 8) {
+                        val a = Math.toRadians(i * 45.0)
+                        val dx = Math.cos(a).toFloat()
+                        val dy = Math.sin(a).toFloat()
+                        canvas.drawLine(cx + dx * r, cy + dy * r, cx + dx * s * 0.66f, cy + dy * s * 0.66f, iconStroke)
+                    }
+                }
+                ToolIcon.SELECT -> {
+                    canvas.drawLine(cx, cy - s * 0.6f, cx, cy + s * 0.6f, iconStroke)
+                    canvas.drawLine(cx - s * 0.34f, cy - s * 0.6f, cx + s * 0.34f, cy - s * 0.6f, iconStroke)
+                    canvas.drawLine(cx - s * 0.34f, cy + s * 0.6f, cx + s * 0.34f, cy + s * 0.6f, iconStroke)
+                    canvas.drawLine(cx - s * 0.72f, cy, cx - s * 0.32f, cy, iconStroke)
+                    canvas.drawLine(cx - s * 0.72f, cy, cx - s * 0.5f, cy - s * 0.2f, iconStroke)
+                    canvas.drawLine(cx - s * 0.72f, cy, cx - s * 0.5f, cy + s * 0.2f, iconStroke)
+                    canvas.drawLine(cx + s * 0.72f, cy, cx + s * 0.32f, cy, iconStroke)
+                    canvas.drawLine(cx + s * 0.72f, cy, cx + s * 0.5f, cy - s * 0.2f, iconStroke)
+                    canvas.drawLine(cx + s * 0.72f, cy, cx + s * 0.5f, cy + s * 0.2f, iconStroke)
+                }
+                null -> {}
             }
         }
 
@@ -871,5 +1053,9 @@ class DroidImeService : InputMethodService() {
         private const val CAPS = "\u2EA6"
         private const val MORE_SYMBOLS = "=\\<"
         private const val NUMBER_PAD = "12/34"
+
+        private val SETTINGS_KEYS = setOf(
+            "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints"
+        )
     }
 }

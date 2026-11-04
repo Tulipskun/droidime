@@ -3,8 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val buildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-
 android {
     namespace = "com.tulipskun.droidime"
     compileSdk = 35
@@ -13,8 +11,8 @@ android {
         applicationId = "com.tulipskun.droidime"
         minSdk = 23
         targetSdk = 35
-        versionCode = buildNumber
-        versionName = "0.1.$buildNumber"
+        versionCode = 1
+        versionName = "1.0.0"
     }
 
     buildFeatures {

@@ -58,14 +58,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VERSION_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts)
           cp app/build/outputs/apk/release/app-release.apk DroidIME.apk
           if gh release view latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release delete latest --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
           fi
           gh release create latest DroidIME.apk \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "DroidIME latest" \
-            --notes "versionCode=${GITHUB_RUN_NUMBER}"
+            --title "DroidIME ${VERSION_NAME}" \
+            --notes "DroidIME ${VERSION_NAME} (versionCode ${VERSION_CODE})"
           rm -f DroidIME.apk
       - name: Remove signing key
         if: always() && github.event_name != 'pull_request'

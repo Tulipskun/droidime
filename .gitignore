@@ -12,3 +12,6 @@ captures/
 .DS_Store
 render/
 /*.png
+reference/
+device/
+.kotlin/
