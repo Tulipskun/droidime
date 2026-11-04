@@ -61,8 +61,10 @@ class DroidImeService : InputMethodService() {
         shifted = flags and (InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
             InputType.TYPE_TEXT_FLAG_CAP_WORDS or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS) != 0
         symbols = false
-        loadSettings()
-        if (::keyboard.isInitialized) renderKeyboard()
+        if (::keyboard.isInitialized) {
+            loadSettings()
+            renderKeyboard()
+        }
     }
 
     private fun loadSettings() {
@@ -70,10 +72,12 @@ class DroidImeService : InputMethodService() {
         val saved = preferences.getString("current_language", language.code)
         language = enabled.firstOrNull { it.code == saved } ?: enabled.first()
         val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
-        keyboard.layoutParams = ViewGroup.LayoutParams(
+        val params = keyboard.layoutParams ?: ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(height)
         )
+        params.height = dp(height)
+        keyboard.layoutParams = params
     }
 
     private fun enabledLanguages(): List<Language> {
