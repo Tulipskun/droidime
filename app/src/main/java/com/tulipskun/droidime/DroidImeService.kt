@@ -2,18 +2,20 @@ package com.tulipskun.droidime
 
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
-import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.TextView
 
 class DroidImeService : InputMethodService() {
-    private enum class Language(val code: String, val label: String) {
-        THAI("th", "ไทย"),
-        ENGLISH("en", "EN")
+    private enum class Language(val code: String) {
+        THAI("th"),
+        ENGLISH("en")
     }
 
     private var language = Language.THAI
@@ -22,7 +24,8 @@ class DroidImeService : InputMethodService() {
     private lateinit var keyboard: LinearLayout
 
     private val thaiRows = listOf(
-        listOf("ๆ", "ไ", "ำ", "พ", "ะ", "ั", "ี", "ร", "น", "ย", "บ", "ล", "ฃ"),
+        listOf("ๅ", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
+        listOf("ๆ", "ไ", "ำ", "พ", "ะ", "ั", "ี", "ร", "น", "ย", "บ", "ล"),
         listOf("ฟ", "ห", "ก", "ด", "เ", "้", "่", "า", "ส", "ว", "ง"),
         listOf("ผ", "ป", "แ", "อ", "ิ", "ื", "ท", "ม", "ใ", "ฝ")
     )
@@ -44,7 +47,8 @@ class DroidImeService : InputMethodService() {
     override fun onCreateInputView(): View {
         keyboard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(224, 228, 236))
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.rgb(218, 222, 230))
         }
         loadSettings()
         renderKeyboard()
@@ -53,7 +57,10 @@ class DroidImeService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        shifted = ((info?.inputType ?: 0) and android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES) != 0
+        val flags = info?.inputType ?: InputType.TYPE_CLASS_TEXT
+        shifted = flags and (InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+            InputType.TYPE_TEXT_FLAG_CAP_WORDS or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS) != 0
+        symbols = false
         loadSettings()
         if (::keyboard.isInitialized) renderKeyboard()
     }
@@ -62,7 +69,7 @@ class DroidImeService : InputMethodService() {
         val enabled = enabledLanguages()
         val saved = preferences.getString("current_language", language.code)
         language = enabled.firstOrNull { it.code == saved } ?: enabled.first()
-        val height = preferences.getInt("keyboard_height_dp", 280)
+        val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
         keyboard.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(height)
@@ -80,32 +87,36 @@ class DroidImeService : InputMethodService() {
 
     private fun renderKeyboard() {
         keyboard.removeAllViews()
-        val height = preferences.getInt("keyboard_height_dp", 280)
-        val rowHeight = dp(((height - 31) / 4).coerceAtLeast(42))
-        val horizontalPadding = dp(4)
-        keyboard.setPadding(horizontalPadding, dp(8), horizontalPadding, dp(8))
-
         val rows = when {
             symbols -> symbolRows
             language == Language.THAI -> thaiRows
             else -> englishRows
         }
+        val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
+        val rowCount = rows.size + 1
+        val rowHeight = dp(((height - 16 - rowCount * 4) / rowCount).coerceAtLeast(36))
+        keyboard.setPadding(dp(3), dp(8), dp(3), dp(8))
+
         rows.forEachIndexed { index, row ->
             val line = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
             }
-            if (index == 2) addKey(line, if (shifted) "⇧" else "↑", 1.2f) {
-                shifted = !shifted
-                renderKeyboard()
+            if (index == rows.lastIndex) {
+                addKey(line, if (shifted) "⇧" else "↑", 1.25f, KeyStyle.SPECIAL) {
+                    shifted = !shifted
+                    renderKeyboard()
+                }
             }
             row.forEach { key ->
                 val label = if (language == Language.ENGLISH && shifted && !symbols) key.uppercase() else key
-                addKey(line, label, 1f) { commitKey(label) }
+                addKey(line, label, 1f, KeyStyle.NORMAL) { commitKey(label) }
             }
-            if (index == 2) addKey(line, "⌫", 1.3f) { deleteOne() }
+            if (index == rows.lastIndex) {
+                addKey(line, "⌫", 1.25f, KeyStyle.SPECIAL) { deleteOne() }
+            }
             keyboard.addView(line, LinearLayout.LayoutParams(-1, rowHeight).apply {
-                bottomMargin = dp(5)
+                bottomMargin = dp(4)
             })
         }
 
@@ -113,45 +124,48 @@ class DroidImeService : InputMethodService() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        addKey(bottom, if (symbols) "ABC" else "?123", 1.2f) {
+        addKey(bottom, if (symbols) "ABC" else "?123", 1.25f, KeyStyle.SPECIAL) {
             symbols = !symbols
             renderKeyboard()
         }
-        addKey(bottom, "🌐", 1f) { switchLanguage() }
-        addKey(bottom, ",", 0.65f) { currentInputConnection?.commitText(",", 1) }
-        addKey(bottom, "space", 3.6f) { currentInputConnection?.commitText(" ", 1) }
-        addKey(bottom, ".", 0.65f) { currentInputConnection?.commitText(".", 1) }
-        addKey(bottom, "↵", 1f) { sendEnter() }
+        addKey(bottom, "🌐", 1f, KeyStyle.SPECIAL) { switchLanguage() }
+        addKey(bottom, ",", 0.7f, KeyStyle.NORMAL) { currentInputConnection?.commitText(",", 1) }
+        addKey(bottom, "space", 3.8f, KeyStyle.SPACE) { currentInputConnection?.commitText(" ", 1) }
+        addKey(bottom, ".", 0.7f, KeyStyle.NORMAL) { currentInputConnection?.commitText(".", 1) }
+        addKey(bottom, "↵", 1.15f, KeyStyle.ENTER) { sendEnter() }
         keyboard.addView(bottom, LinearLayout.LayoutParams(-1, rowHeight))
     }
 
-    private fun switchLanguage() {
-        val enabled = enabledLanguages()
-        if (enabled.size < 2) return
-        val next = enabled[(enabled.indexOf(language) + 1) % enabled.size]
-        language = next
-        preferences.edit().putString("current_language", language.code).apply()
-        symbols = false
-        shifted = false
-        renderKeyboard()
-    }
+    private enum class KeyStyle { NORMAL, SPECIAL, SPACE, ENTER }
 
-    private fun addKey(row: LinearLayout, label: String, weight: Float, action: () -> Unit) {
-        val button = Button(this).apply {
+    private fun addKey(
+        row: LinearLayout,
+        label: String,
+        weight: Float,
+        style: KeyStyle,
+        action: () -> Unit
+    ) {
+        val key = TextView(this).apply {
             text = label
-            textSize = if (label.length > 3) 12f else 18f
-            setTextColor(Color.rgb(32, 39, 53))
-            typeface = Typeface.DEFAULT
-            isAllCaps = false
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(0, 0, 0, 0)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(if (label == "↵" || label == "space") Color.rgb(174, 190, 222) else Color.WHITE)
-                cornerRadius = dp(8).toFloat()
+            gravity = Gravity.CENTER
+            textSize = when {
+                label == "space" -> 12f
+                label.length > 1 -> 14f
+                else -> 20f
             }
+            setTextColor(Color.rgb(34, 39, 49))
+            typeface = Typeface.DEFAULT
+            isSingleLine = true
+            background = GradientDrawable().apply {
+                setColor(when (style) {
+                    KeyStyle.NORMAL -> Color.WHITE
+                    KeyStyle.SPECIAL -> Color.rgb(194, 202, 216)
+                    KeyStyle.SPACE -> Color.rgb(255, 255, 255)
+                    KeyStyle.ENTER -> Color.rgb(91, 119, 180)
+                })
+                cornerRadius = dp(7).toFloat()
+            }
+            if (style == KeyStyle.ENTER) setTextColor(Color.WHITE)
             contentDescription = when (label) {
                 "🌐" -> "Switch language"
                 "⌫" -> "Delete"
@@ -161,10 +175,20 @@ class DroidImeService : InputMethodService() {
             }
             setOnClickListener { action() }
         }
-        row.addView(button, LinearLayout.LayoutParams(0, -1, weight).apply {
+        row.addView(key, LinearLayout.LayoutParams(0, -1, weight).apply {
             marginStart = dp(2)
             marginEnd = dp(2)
         })
+    }
+
+    private fun switchLanguage() {
+        val enabled = enabledLanguages()
+        if (enabled.size < 2) return
+        language = enabled[(enabled.indexOf(language) + 1) % enabled.size]
+        preferences.edit().putString("current_language", language.code).apply()
+        symbols = false
+        shifted = false
+        renderKeyboard()
     }
 
     private fun commitKey(value: String) {
