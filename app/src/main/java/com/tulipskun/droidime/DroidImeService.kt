@@ -4,8 +4,12 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -21,13 +25,27 @@ class DroidImeService : InputMethodService() {
     private var language = Language.THAI
     private var shifted = false
     private var symbols = false
+    private var navigationInset = 0
     private lateinit var keyboard: LinearLayout
+    private val deleteHandler = Handler(Looper.getMainLooper())
+    private var deleteRepeat: Runnable? = null
 
     private val thaiRows = listOf(
         listOf("ๅ", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
         listOf("ๆ", "ไ", "ำ", "พ", "ะ", "ั", "ี", "ร", "น", "ย", "บ", "ล"),
         listOf("ฟ", "ห", "ก", "ด", "เ", "้", "่", "า", "ส", "ว", "ง"),
         listOf("ผ", "ป", "แ", "อ", "ิ", "ื", "ท", "ม", "ใ", "ฝ")
+    )
+    private val thaiShift = mapOf(
+        "ๅ" to "+", "ภ" to "๑", "ถ" to "๒", "ุ" to "๓", "ึ" to "๔",
+        "ค" to "๕", "ต" to "๖", "จ" to "๗", "ข" to "๘", "ช" to "๙",
+        "ๆ" to "๐", "ไ" to "\"", "ำ" to "ฎ", "พ" to "ฑ", "ะ" to "ธ",
+        "ั" to "ํ", "ี" to "๊", "ร" to "ณ", "น" to "ฯ", "ย" to "ญ",
+        "บ" to "ฐ", "ล" to ",", "ฟ" to "ฤ", "ห" to "ฆ", "ก" to "ฏ",
+        "ด" to "โ", "เ" to "ฌ", "้" to "็", "่" to "๋", "า" to "ษ",
+        "ส" to "ศ", "ว" to "ซ", "ง" to ".", "ผ" to "(", "ป" to ")",
+        "แ" to "ฉ", "อ" to "ฮ", "ิ" to "ฺ", "ื" to "์", "ท" to "?",
+        "ม" to "ฒ", "ใ" to "ฬ", "ฝ" to "ฦ"
     )
     private val englishRows = listOf(
         listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
@@ -49,9 +67,19 @@ class DroidImeService : InputMethodService() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setBackgroundColor(Color.rgb(218, 222, 230))
+            setOnApplyWindowInsetsListener { view, insets ->
+                navigationInset = insets.systemWindowInsetBottom
+                view.setPadding(dp(3), dp(8), dp(3), dp(8) + navigationInset)
+                insets
+            }
         }
+        if (Build.VERSION.SDK_INT >= 29) {
+            window?.isNavigationBarContrastEnforced = false
+        }
+        window?.navigationBarColor = Color.rgb(218, 222, 230)
         loadSettings()
         renderKeyboard()
+        keyboard.requestApplyInsets()
         return keyboard
     }
 
@@ -65,6 +93,16 @@ class DroidImeService : InputMethodService() {
             loadSettings()
             renderKeyboard()
         }
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        stopDeleteRepeat()
+        super.onFinishInputView(finishingInput)
+    }
+
+    override fun onDestroy() {
+        stopDeleteRepeat()
+        super.onDestroy()
     }
 
     private fun loadSettings() {
@@ -97,9 +135,10 @@ class DroidImeService : InputMethodService() {
             else -> englishRows
         }
         val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
+        val insetDp = (navigationInset / resources.displayMetrics.density).toInt()
         val rowCount = rows.size + 1
-        val rowHeight = dp(((height - 16 - rowCount * 4) / rowCount).coerceAtLeast(36))
-        keyboard.setPadding(dp(3), dp(8), dp(3), dp(8))
+        val rowHeight = dp(((height - insetDp - 16 - rowCount * 4) / rowCount).coerceAtLeast(36))
+        keyboard.setPadding(dp(3), dp(8), dp(3), dp(8) + navigationInset)
 
         rows.forEachIndexed { index, row ->
             val line = LinearLayout(this).apply {
@@ -113,7 +152,12 @@ class DroidImeService : InputMethodService() {
                 }
             }
             row.forEach { key ->
-                val label = if (language == Language.ENGLISH && shifted && !symbols) key.uppercase() else key
+                val label = when {
+                    symbols -> key
+                    language == Language.THAI && shifted -> thaiShift[key] ?: key
+                    language == Language.ENGLISH && shifted -> key.uppercase()
+                    else -> key
+                }
                 addKey(line, label, 1f, KeyStyle.NORMAL) { commitKey(label) }
             }
             if (index == rows.lastIndex) {
@@ -164,7 +208,7 @@ class DroidImeService : InputMethodService() {
                 setColor(when (style) {
                     KeyStyle.NORMAL -> Color.WHITE
                     KeyStyle.SPECIAL -> Color.rgb(194, 202, 216)
-                    KeyStyle.SPACE -> Color.rgb(255, 255, 255)
+                    KeyStyle.SPACE -> Color.WHITE
                     KeyStyle.ENTER -> Color.rgb(91, 119, 180)
                 })
                 cornerRadius = dp(7).toFloat()
@@ -175,14 +219,42 @@ class DroidImeService : InputMethodService() {
                 "⌫" -> "Delete"
                 "↵" -> "Enter"
                 "space" -> "Space"
+                "⇧", "↑" -> "Shift"
                 else -> label
             }
             setOnClickListener { action() }
+            if (label == "⌫") {
+                setOnLongClickListener {
+                    stopDeleteRepeat()
+                    deleteOne()
+                    val repeat = object : Runnable {
+                        override fun run() {
+                            deleteOne()
+                            deleteHandler.postDelayed(this, 55)
+                        }
+                    }
+                    deleteRepeat = repeat
+                    deleteHandler.postDelayed(repeat, 280)
+                    true
+                }
+                setOnTouchListener { _, event ->
+                    if (event.action == MotionEvent.ACTION_UP ||
+                        event.action == MotionEvent.ACTION_CANCEL) {
+                        stopDeleteRepeat()
+                    }
+                    false
+                }
+            }
         }
         row.addView(key, LinearLayout.LayoutParams(0, -1, weight).apply {
             marginStart = dp(2)
             marginEnd = dp(2)
         })
+    }
+
+    private fun stopDeleteRepeat() {
+        deleteRepeat?.let { deleteHandler.removeCallbacks(it) }
+        deleteRepeat = null
     }
 
     private fun switchLanguage() {
@@ -197,7 +269,7 @@ class DroidImeService : InputMethodService() {
 
     private fun commitKey(value: String) {
         currentInputConnection?.commitText(value, 1)
-        if (shifted && language == Language.ENGLISH) {
+        if (shifted && !symbols) {
             shifted = false
             renderKeyboard()
         }
@@ -205,10 +277,7 @@ class DroidImeService : InputMethodService() {
 
     private fun deleteOne() {
         val connection = currentInputConnection ?: return
-        if (!connection.deleteSurroundingText(1, 0)) {
-            connection.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DEL))
-            connection.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DEL))
-        }
+        connection.deleteSurroundingText(1, 0)
     }
 
     private fun sendEnter() {
