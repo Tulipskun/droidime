@@ -405,6 +405,7 @@ class MainActivity : Activity() {
                     }
                 }
                 DownloadManager.STATUS_SUCCESSFUL -> {
+                    val completedId = downloadId
                     stopDownloadPolling()
                     downloadId = -1L
                     downloadProgress.isIndeterminate = false
@@ -414,7 +415,7 @@ class MainActivity : Activity() {
                         unregisterReceiver(downloadReceiver)
                         receiverRegistered = false
                     }
-                    openDownloadedInstaller(manager)
+                    openDownloadedInstaller(manager, completedId)
                 }
                 DownloadManager.STATUS_FAILED -> {
                     val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
@@ -432,8 +433,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun openDownloadedInstaller(manager: DownloadManager) {
-        val uri = manager.getUriForDownloadedFile(downloadId)
+    private fun openDownloadedInstaller(manager: DownloadManager, completedId: Long) {
+        val uri = manager.getUriForDownloadedFile(completedId)
         if (uri == null) {
             updateButton.isEnabled = true
             status.text = "Download finished, but the APK file could not be opened."
