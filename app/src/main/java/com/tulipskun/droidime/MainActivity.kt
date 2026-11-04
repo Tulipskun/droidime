@@ -13,6 +13,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -21,6 +23,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
@@ -34,6 +37,9 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var setupStatus: TextView
     private lateinit var updateButton: TextView
+    private lateinit var downloadProgress: ProgressBar
+    private val progressHandler = Handler(Looper.getMainLooper())
+    private var progressRunnable: Runnable? = null
     private var downloadId = -1L
     private var receiverRegistered = false
 
@@ -43,20 +49,9 @@ class MainActivity : Activity() {
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) != downloadId) return
-            val manager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
-            val uri = manager.getUriForDownloadedFile(downloadId)
-            if (uri == null) {
-                status.text = getString(R.string.update_download_failed)
-                updateButton.isEnabled = true
-                return
+            if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) == downloadId) {
+                refreshDownloadStatus()
             }
-            status.text = getString(R.string.update_installing)
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(installIntent)
         }
     }
 
@@ -178,6 +173,14 @@ class MainActivity : Activity() {
             setPadding(0, dp(2), 0, dp(10))
         }
         updateCard.addView(status)
+        downloadProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            visibility = View.GONE
+        }
+        updateCard.addView(downloadProgress, LinearLayout.LayoutParams(-1, dp(6)).apply {
+            bottomMargin = dp(10)
+        })
         updateButton = actionButton("Check for updates") { checkForUpdate() }
         updateCard.addView(updateButton)
         content.addView(updateCard, sectionParams())
@@ -311,38 +314,169 @@ class MainActivity : Activity() {
 
     private fun installUpdate(downloadUrl: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            updateButton.isEnabled = true
             status.text = getString(R.string.update_allow_installs)
-            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                 data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
+            })
             return
         }
 
-        updateButton.isEnabled = false
-        status.text = getString(R.string.update_downloading)
+        try {
+            val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(downloadReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(downloadReceiver, filter)
+            }
+            receiverRegistered = true
 
-        val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
-            setTitle(getString(R.string.app_name))
-            setDescription(getString(R.string.update_downloading))
-            setMimeType("application/vnd.android.package-archive")
-            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, "DroidIME.apk")
+            val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
+                setTitle(getString(R.string.app_name))
+                setDescription("Downloading DroidIME update")
+                setMimeType("application/vnd.android.package-archive")
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, "DroidIME-update.apk")
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
+            }
+
+            val manager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+            downloadProgress.visibility = View.VISIBLE
+            downloadProgress.isIndeterminate = true
+            downloadProgress.progress = 0
+            updateButton.isEnabled = false
+            status.text = "Starting download…"
+            downloadId = manager.enqueue(request)
+            startDownloadPolling()
+        } catch (error: Exception) {
+            stopDownloadPolling()
+            if (receiverRegistered) {
+                unregisterReceiver(downloadReceiver)
+                receiverRegistered = false
+            }
+            downloadProgress.visibility = View.GONE
+            updateButton.isEnabled = true
+            status.text = "Could not start download: ${error.message ?: "unknown error"}"
         }
+    }
 
+    private fun startDownloadPolling() {
+        stopDownloadPolling()
+        progressRunnable = object : Runnable {
+            override fun run() {
+                refreshDownloadStatus()
+                if (downloadId != -1L && progressRunnable === this) {
+                    progressHandler.postDelayed(this, 350)
+                }
+            }
+        }
+        progressHandler.post(progressRunnable!!)
+    }
+
+    private fun stopDownloadPolling() {
+        progressRunnable?.let { progressHandler.removeCallbacks(it) }
+        progressRunnable = null
+    }
+
+    private fun refreshDownloadStatus() {
+        if (downloadId == -1L || isFinishing || isDestroyed) return
         val manager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
-        downloadId = manager.enqueue(request)
-        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(downloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(downloadReceiver, filter)
+        val cursor = manager.query(DownloadManager.Query().setFilterById(downloadId)) ?: return
+        cursor.use {
+            if (!it.moveToFirst()) return
+            val state = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val downloaded = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+            val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+            when (state) {
+                DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED -> {
+                    downloadProgress.isIndeterminate = total <= 0L
+                    if (total > 0L) {
+                        val percent = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                        downloadProgress.progress = percent
+                        status.text = "Downloading update: $percent% · ${formatBytes(downloaded)} / ${formatBytes(total)}"
+                    } else {
+                        status.text = "Downloading update · ${formatBytes(downloaded)}"
+                    }
+                    if (state == DownloadManager.STATUS_PAUSED) {
+                        val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        status.text = "Download paused: ${downloadReason(reason)}"
+                    }
+                }
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    stopDownloadPolling()
+                    downloadId = -1L
+                    downloadProgress.isIndeterminate = false
+                    downloadProgress.progress = 100
+                    downloadProgress.visibility = View.GONE
+                    if (receiverRegistered) {
+                        unregisterReceiver(downloadReceiver)
+                        receiverRegistered = false
+                    }
+                    openDownloadedInstaller(manager)
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                    stopDownloadPolling()
+                    downloadId = -1L
+                    downloadProgress.visibility = View.GONE
+                    updateButton.isEnabled = true
+                    status.text = "Download failed: ${downloadReason(reason)} (code $reason)"
+                    if (receiverRegistered) {
+                        unregisterReceiver(downloadReceiver)
+                        receiverRegistered = false
+                    }
+                }
+            }
         }
-        receiverRegistered = true
+    }
+
+    private fun openDownloadedInstaller(manager: DownloadManager) {
+        val uri = manager.getUriForDownloadedFile(downloadId)
+        if (uri == null) {
+            updateButton.isEnabled = true
+            status.text = "Download finished, but the APK file could not be opened."
+            return
+        }
+        try {
+            status.text = "Download complete. Opening installer…"
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(installIntent)
+        } catch (error: Exception) {
+            updateButton.isEnabled = true
+            status.text = "Could not open installer: ${error.message ?: "unknown error"}"
+        }
+    }
+
+    private fun downloadReason(reason: Int): String = when (reason) {
+        DownloadManager.ERROR_CANNOT_RESUME -> "cannot resume"
+        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "storage unavailable"
+        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "file already exists"
+        DownloadManager.ERROR_FILE_ERROR -> "file error"
+        DownloadManager.ERROR_HTTP_DATA_ERROR -> "network data error"
+        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "not enough storage"
+        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "too many redirects"
+        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "HTTP error"
+        DownloadManager.ERROR_UNKNOWN -> "unknown download error"
+        DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "waiting for Wi-Fi"
+        DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "waiting for network"
+        DownloadManager.PAUSED_WAITING_TO_RETRY -> "waiting to retry"
+        DownloadManager.PAUSED_UNKNOWN -> "paused"
+        else -> "reason $reason"
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024L) return "$bytes B"
+        if (bytes < 1024L * 1024L) return String.format("%.1f KB", bytes / 1024.0)
+        return String.format("%.1f MB", bytes / (1024.0 * 1024.0))
     }
 
     override fun onDestroy() {
+        stopDownloadPolling()
         if (receiverRegistered) unregisterReceiver(downloadReceiver)
         executor.shutdownNow()
         super.onDestroy()
