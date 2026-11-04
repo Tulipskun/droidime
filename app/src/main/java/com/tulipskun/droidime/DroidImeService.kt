@@ -16,6 +16,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -34,6 +35,7 @@ class DroidImeService : InputMethodService() {
     private var lastShiftTap = 0L
     private var symbols = false
     private var symbolPage = 0
+    private var numberPad = false
     private var navigationInset = 0
     private lateinit var keyboard: LinearLayout
     private val deleteHandler = Handler(Looper.getMainLooper())
@@ -42,7 +44,7 @@ class DroidImeService : InputMethodService() {
     private val thaiRows = listOf(
         listOf("ๅ", "/", "-", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
         listOf("ๆ", "ไ", "ำ", "พ", "ะ", "ั", "ี", "ร", "น", "ย", "บ", "ล"),
-        listOf("ฟ", "ห", "ก", "ด", "เ", "้", "่", "า", "ส", "ว", "ง"),
+        listOf("ฟ", "ห", "ก", "ด", "เ", "้", "่", "า", "ส", "ว", "ง", "ฃ"),
         listOf("ผ", "ป", "แ", "อ", "ิ", "ื", "ท", "ม", "ใ", "ฝ")
     )
     private val thaiShift = mapOf(
@@ -52,24 +54,51 @@ class DroidImeService : InputMethodService() {
         "ั" to "ํ", "ี" to "๊", "ร" to "ณ", "น" to "ฯ", "ย" to "ญ",
         "บ" to "ฐ", "ล" to ",", "ฟ" to "ฤ", "ห" to "ฆ", "ก" to "ฏ",
         "ด" to "โ", "เ" to "ฌ", "้" to "็", "่" to "๋", "า" to "ษ",
-        "ส" to "ศ", "ว" to "ซ", "ง" to ".", "ผ" to "(", "ป" to ")",
+        "ส" to "ศ", "ว" to "ซ", "ง" to ".", "ฃ" to "ฅ", "ผ" to "(", "ป" to ")",
         "แ" to "ฉ", "อ" to "ฮ", "ิ" to "ฺ", "ื" to "์", "ท" to "?",
         "ม" to "ฒ", "ใ" to "ฬ", "ฝ" to "ฦ"
     )
+
+    // Small hint in the top-right corner of a key; long-press types it (like Gboard).
+    private val thaiHints = mapOf(
+        "ๅ" to "1", "/" to "2", "-" to "3", "ภ" to "4", "ถ" to "5",
+        "ค" to "6", "ต" to "7", "จ" to "8", "ข" to "9", "ช" to "0",
+        "ๆ" to "=", "ไ" to "@", "ำ" to "#", "พ" to "฿", "ะ" to "-",
+        "ร" to "&", "น" to "_", "ย" to "+", "บ" to "(", "ล" to ")",
+        "ฟ" to "\\", "ห" to "%", "ก" to "*", "ด" to "\"", "เ" to "'",
+        "า" to ":", "ส" to ";", "ว" to "!", "ง" to "?", "ฃ" to "/",
+        "ผ" to "[", "ป" to "]", "แ" to "{", "อ" to "}",
+        "ท" to "~", "ม" to "`", "ใ" to "<", "ฝ" to ">"
+    )
+    private val englishHints = mapOf(
+        "q" to "%", "w" to "\\", "e" to "|", "r" to "=", "t" to "[",
+        "y" to "]", "u" to "<", "i" to ">", "o" to "{", "p" to "}",
+        "a" to "@", "s" to "#", "d" to "$", "f" to "_", "g" to "&",
+        "h" to "-", "j" to "+", "k" to "(", "l" to ")",
+        "z" to "*", "x" to "\"", "c" to "'", "v" to ":", "b" to ";",
+        "n" to "!", "m" to "?"
+    )
+
+    private val numberRow = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
     private val englishRows = listOf(
         listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
         listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
         listOf("z", "x", "c", "v", "b", "n", "m")
     )
     private val symbolRows = listOf(
-        listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
-        listOf("@", "#", "$", "%", "&", "-", "+", "(", ")"),
-        listOf("*", "\"", "'", ":", ";", "!", "?", "/")
+        numberRow,
+        listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"),
+        listOf("*", "\"", "'", ":", ";", "!", "?")
     )
     private val moreSymbolRows = listOf(
-        listOf("[", "]", "{", "}", "#", "%", "^", "*", "+", "="),
-        listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥", "฿"),
-        listOf("°", "•", "…", "`", "§", "©", "®")
+        listOf("~", "`", "|", "•", "√", "π", "÷", "×", "§", "∆"),
+        listOf("£", "¢", "€", "¥", "^", "°", "=", "{", "}", "\\"),
+        listOf("%", "©", "®", "™", "✓", "[", "]")
+    )
+    private val padRows = listOf(
+        listOf("1", "2", "3", "-"),
+        listOf("4", "5", "6", "."),
+        listOf("7", "8", "9", ",")
     )
 
     private val preferences by lazy {
@@ -115,9 +144,10 @@ class DroidImeService : InputMethodService() {
         }
         if (!restarting) {
             fieldKind = fieldKindOf(info)
+            symbols = false
             symbolPage = 0
             shiftLocked = false
-            symbols = fieldKind == FieldKind.NUMBER || fieldKind == FieldKind.PHONE
+            numberPad = fieldKind == FieldKind.NUMBER || fieldKind == FieldKind.PHONE
             val latinOnly = fieldKind == FieldKind.EMAIL ||
                 fieldKind == FieldKind.URL ||
                 fieldKind == FieldKind.PASSWORD
@@ -183,10 +213,11 @@ class DroidImeService : InputMethodService() {
     private fun renderKeyboard() {
         keyboard.removeAllViews()
         val rows = when {
+            numberPad -> padRows
             symbols && symbolPage == 1 -> moreSymbolRows
             symbols -> symbolRows
             language == Language.THAI -> thaiRows
-            else -> englishRows
+            else -> listOf(numberRow) + englishRows
         }
         val height = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
         val insetDp = (navigationInset / resources.displayMetrics.density).toInt()
@@ -199,9 +230,10 @@ class DroidImeService : InputMethodService() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
             }
-            if (index == rows.lastIndex) {
+            val lastRow = index == rows.lastIndex && !numberPad
+            if (lastRow) {
                 if (symbols) {
-                    addKey(line, if (symbolPage == 0) "1/2" else "2/2", 1.25f, KeyStyle.SPECIAL) {
+                    addKey(line, if (symbolPage == 0) "=\\<" else "?123", 1.25f, KeyStyle.SPECIAL) {
                         symbolPage = 1 - symbolPage
                         renderKeyboard()
                     }
@@ -217,14 +249,19 @@ class DroidImeService : InputMethodService() {
             }
             row.forEach { key ->
                 val label = when {
-                    symbols -> key
+                    symbols || numberPad -> key
                     language == Language.THAI && shifted -> thaiShift[key] ?: key
                     language == Language.ENGLISH && shifted -> key.uppercase()
                     else -> key
                 }
-                addKey(line, label, 1f, KeyStyle.NORMAL) { typeText(label) }
+                val hint = when {
+                    symbols || numberPad -> null
+                    language == Language.THAI -> thaiHints[key]
+                    else -> englishHints[key]
+                }
+                addKey(line, label, 1f, KeyStyle.NORMAL, hint = hint) { typeText(label) }
             }
-            if (index == rows.lastIndex) {
+            if (lastRow) {
                 addKey(line, "⌫", 1.25f, KeyStyle.SPECIAL) { deleteOne() }
             }
             keyboard.addView(line, LinearLayout.LayoutParams(-1, rowHeight).apply {
@@ -236,28 +273,58 @@ class DroidImeService : InputMethodService() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        addKey(bottom, if (symbols) "ABC" else "?123", 1.25f, KeyStyle.SPECIAL) {
-            symbols = !symbols
-            symbolPage = 0
-            renderKeyboard()
+        if (numberPad) {
+            addKey(bottom, "?123", 1.25f, KeyStyle.SPECIAL) {
+                numberPad = false
+                symbols = true
+                symbolPage = 0
+                renderKeyboard()
+            }
+            addKey(bottom, "ABC", 1.25f, KeyStyle.SPECIAL) {
+                numberPad = false
+                symbols = false
+                if (!shiftLocked) shifted = computeAutoShift()
+                renderKeyboard()
+            }
+            addKey(bottom, "0", 2f, KeyStyle.NORMAL) { typeText("0") }
+            addKey(bottom, "⌫", 1.25f, KeyStyle.SPECIAL) { deleteOne() }
+            addKey(bottom, enterLabel(), 1.3f, KeyStyle.ENTER) { sendEnter() }
+        } else {
+            val morePage = symbols && symbolPage == 1
+            val leftSide = when {
+                morePage -> "<"
+                !symbols && fieldKind == FieldKind.EMAIL -> "@"
+                !symbols && fieldKind == FieldKind.URL -> "/"
+                else -> ","
+            }
+            val rightSide = if (morePage) ">" else "."
+            val spaceLabel = when {
+                symbols -> "space"
+                language == Language.THAI -> "ไทย"
+                else -> "English"
+            }
+            addKey(bottom, if (symbols) "ABC" else "?123", 1.25f, KeyStyle.SPECIAL) {
+                symbols = !symbols
+                symbolPage = 0
+                if (!shiftLocked) shifted = computeAutoShift()
+                renderKeyboard()
+            }
+            addKey(bottom, leftSide, 0.7f, KeyStyle.NORMAL) { typeText(leftSide) }
+            if (symbols) {
+                addKey(bottom, "12/34", 1f, KeyStyle.SPECIAL) {
+                    symbols = false
+                    numberPad = true
+                    renderKeyboard()
+                }
+            } else {
+                addKey(bottom, "🌐", 1f, KeyStyle.SPECIAL, longPress = { showKeyboardPicker() }) {
+                    switchLanguage()
+                }
+            }
+            addKey(bottom, spaceLabel, 3.65f, KeyStyle.SPACE) { typeText(" ") }
+            addKey(bottom, rightSide, 0.7f, KeyStyle.NORMAL) { typeText(rightSide) }
+            addKey(bottom, enterLabel(), 1.3f, KeyStyle.ENTER) { sendEnter() }
         }
-        addKey(bottom, "🌐", 1f, KeyStyle.SPECIAL, longPress = { showKeyboardPicker() }) {
-            switchLanguage()
-        }
-        val sideKey = when (fieldKind) {
-            FieldKind.EMAIL -> "@"
-            FieldKind.URL -> "/"
-            else -> ","
-        }
-        val spaceLabel = when {
-            symbols -> "space"
-            language == Language.THAI -> "ไทย"
-            else -> "English"
-        }
-        addKey(bottom, sideKey, 0.7f, KeyStyle.NORMAL) { typeText(sideKey) }
-        addKey(bottom, spaceLabel, 3.65f, KeyStyle.SPACE) { typeText(" ") }
-        addKey(bottom, ".", 0.7f, KeyStyle.NORMAL) { typeText(".") }
-        addKey(bottom, enterLabel(), 1.3f, KeyStyle.ENTER) { sendEnter() }
         keyboard.addView(bottom, LinearLayout.LayoutParams(-1, rowHeight))
     }
 
@@ -268,21 +335,11 @@ class DroidImeService : InputMethodService() {
         label: String,
         weight: Float,
         style: KeyStyle,
+        hint: String? = null,
         longPress: (() -> Unit)? = null,
         action: () -> Unit
     ) {
-        val key = TextView(this).apply {
-            text = label
-            gravity = Gravity.CENTER
-            textSize = when {
-                style == KeyStyle.SPACE -> 12f
-                label.length > 4 -> 11f
-                label.length > 1 -> 14f
-                else -> 20f
-            }
-            setTextColor(Color.rgb(34, 39, 49))
-            typeface = Typeface.DEFAULT
-            isSingleLine = true
+        val key = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 setColor(when (style) {
                     KeyStyle.NORMAL -> Color.WHITE
@@ -293,7 +350,6 @@ class DroidImeService : InputMethodService() {
                 })
                 cornerRadius = dp(7).toFloat()
             }
-            if (style == KeyStyle.ENTER) setTextColor(Color.WHITE)
             contentDescription = when {
                 style == KeyStyle.SPACE -> "Space"
                 label == "🌐" -> "Switch language"
@@ -301,44 +357,72 @@ class DroidImeService : InputMethodService() {
                 label == "↵" -> "Enter"
                 label == "⇧" || label == "↑" -> "Shift"
                 label == "⇪" -> "Caps lock"
-                label == "1/2" || label == "2/2" -> "More symbols"
+                label == "=\\<" -> "More symbols"
+                label == "12/34" -> "Number pad"
                 label == "?123" -> "Numbers and symbols"
                 label == "ABC" -> "Letters"
                 else -> label
             }
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                action()
+        }
+        key.addView(TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER
+            textSize = when {
+                style == KeyStyle.SPACE -> 12f
+                label.length > 4 -> 11f
+                label.length > 1 -> 14f
+                else -> 20f
             }
-            if (label == "⌫") {
-                setOnLongClickListener {
+            setTextColor(if (style == KeyStyle.ENTER) Color.WHITE else Color.rgb(34, 39, 49))
+            typeface = Typeface.DEFAULT
+            isSingleLine = true
+        }, FrameLayout.LayoutParams(-1, -1))
+        if (hint != null) {
+            key.addView(TextView(this).apply {
+                text = hint
+                textSize = 10f
+                setTextColor(Color.rgb(105, 113, 128))
+                isSingleLine = true
+            }, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(2)
+                marginEnd = dp(4)
+            })
+        }
+
+        val longAction: (() -> Unit)? = longPress ?: hint?.let { value -> { typeText(value) } }
+        key.setOnClickListener {
+            key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            action()
+        }
+        if (label == "⌫") {
+            key.setOnLongClickListener {
+                stopDeleteRepeat()
+                deleteOne(updateShift = false)
+                val repeat = object : Runnable {
+                    override fun run() {
+                        deleteOne(updateShift = false)
+                        deleteHandler.postDelayed(this, 55)
+                    }
+                }
+                deleteRepeat = repeat
+                deleteHandler.postDelayed(repeat, 280)
+                true
+            }
+            key.setOnTouchListener { _, event ->
+                if (event.action == MotionEvent.ACTION_UP ||
+                    event.action == MotionEvent.ACTION_CANCEL) {
+                    val wasRepeating = deleteRepeat != null
                     stopDeleteRepeat()
-                    deleteOne(updateShift = false)
-                    val repeat = object : Runnable {
-                        override fun run() {
-                            deleteOne(updateShift = false)
-                            deleteHandler.postDelayed(this, 55)
-                        }
-                    }
-                    deleteRepeat = repeat
-                    deleteHandler.postDelayed(repeat, 280)
-                    true
+                    // Re-rendering mid-repeat would drop the touch, so refresh shift afterwards.
+                    if (wasRepeating) keyboard.post { afterTextChanged() }
                 }
-                setOnTouchListener { _, event ->
-                    if (event.action == MotionEvent.ACTION_UP ||
-                        event.action == MotionEvent.ACTION_CANCEL) {
-                        val wasRepeating = deleteRepeat != null
-                        stopDeleteRepeat()
-                        // Re-rendering mid-repeat would drop the touch, so refresh shift afterwards.
-                        if (wasRepeating) keyboard.post { afterTextChanged() }
-                    }
-                    false
-                }
-            } else if (longPress != null) {
-                setOnLongClickListener {
-                    longPress()
-                    true
-                }
+                false
+            }
+        } else if (longAction != null) {
+            key.setOnLongClickListener {
+                key.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                longAction()
+                true
             }
         }
         row.addView(key, LinearLayout.LayoutParams(0, -1, weight).apply {
@@ -376,7 +460,7 @@ class DroidImeService : InputMethodService() {
         preferences.edit().putString("current_language", language.code).apply()
         symbols = false
         symbolPage = 0
-        shifted = false
+        numberPad = false
         shiftLocked = false
         shifted = computeAutoShift()
         renderKeyboard()
@@ -389,14 +473,14 @@ class DroidImeService : InputMethodService() {
 
     // English capitalises after sentence ends when the field asks for it.
     private fun computeAutoShift(): Boolean {
-        if (symbols || language != Language.ENGLISH) return false
+        if (symbols || numberPad || language != Language.ENGLISH) return false
         val type = currentInputEditorInfo?.inputType ?: return false
         if (type == InputType.TYPE_NULL) return false
         return (currentInputConnection?.getCursorCapsMode(type) ?: 0) != 0
     }
 
     private fun afterTextChanged() {
-        if (symbols || shiftLocked) return
+        if (symbols || numberPad || shiftLocked) return
         val next = computeAutoShift()
         if (next != shifted) {
             shifted = next
