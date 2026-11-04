@@ -7,6 +7,8 @@
     <string name="setup_message">Enable DroidIME in Android keyboard settings, then select it as your current keyboard.</string>
     <string name="open_settings">Open keyboard settings</string>
     <string name="select_keyboard">Select keyboard</string>
+    <string name="languages_title">Languages</string>
+    <string name="keyboard_height">Keyboard height: %1$d dp</string>
     <string name="check_updates">Check for updates</string>
     <string name="update_current">Version %1$s</string>
     <string name="update_checking">Checking for updates…</string>
