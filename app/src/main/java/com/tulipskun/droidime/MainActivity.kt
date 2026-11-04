@@ -298,10 +298,16 @@ class MainActivity : Activity() {
     }
 
     private fun refreshSetupStatus() {
-        val component = ComponentName(this, DroidImeService::class.java).flattenToString()
+        val component = ComponentName(this, DroidImeService::class.java)
         val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        val enabled = manager.enabledInputMethodList.any { it.id == component }
-        val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD) == component
+        // Stored IME ids use the short "pkg/.Class" form; compare as ComponentName so both
+        // the short and fully-qualified spellings match.
+        val enabled = manager.enabledInputMethodList.any {
+            ComponentName.unflattenFromString(it.id) == component
+        }
+        val selected = ComponentName.unflattenFromString(
+            Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+        ) == component
         setupStatus.text = when {
             selected -> "DroidIME is enabled and selected."
             enabled -> "DroidIME is enabled. Select it as the current keyboard."
