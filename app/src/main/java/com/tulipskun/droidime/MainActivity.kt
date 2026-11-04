@@ -1,8 +1,11 @@
 package com.tulipskun.droidime
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -185,6 +188,17 @@ class MainActivity : Activity() {
         updateCard.addView(updateButton)
         content.addView(updateCard, sectionParams())
 
+        val logCard = card()
+        logCard.addView(sectionTitle("Diagnostic log"))
+        logCard.addView(TextView(this).apply {
+            text = "Crash reports are stored inside the app and remain available after a restart."
+            textSize = 13f
+            setTextColor(Color.rgb(105, 113, 128))
+            setPadding(0, 0, 0, dp(8))
+        })
+        logCard.addView(actionButton("View / copy crash log") { showCrashLog() })
+        content.addView(logCard, sectionParams())
+
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
@@ -207,6 +221,21 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::setupStatus.isInitialized) refreshSetupStatus()
+    }
+
+    private fun showCrashLog() {
+        val file = java.io.File(filesDir, "crash.log")
+        val log = if (file.exists()) file.readText() else "No crash log has been recorded."
+        AlertDialog.Builder(this)
+            .setTitle("Crash log")
+            .setMessage(log.takeLast(14000))
+            .setPositiveButton("Copy full log") { _, _ ->
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("DroidIME crash log", log))
+                android.widget.Toast.makeText(this, "Crash log copied", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun refreshSetupStatus() {
