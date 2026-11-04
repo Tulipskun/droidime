@@ -385,7 +385,7 @@ class MainActivity : Activity() {
 
                 val release = JSONObject(response)
                 val notes = release.optString("body")
-                val version = Regex("versionCode=(\\d+)").find(notes)?.groupValues?.get(1)?.toIntOrNull()
+                val version = Regex("versionCode\\s*[=:]?\\s*(\\d+)").find(notes)?.groupValues?.get(1)?.toIntOrNull()
                     ?: throw IllegalStateException(getString(R.string.update_version_missing))
                 val assets = release.getJSONArray("assets")
                 var apkUrl: String? = null
