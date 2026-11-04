@@ -1,4 +1,4 @@
-name: Android CI
+name: Android Release
 
 on:
   push:
@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: droidime-release
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -22,11 +26,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
-      - name: Build debug APK
+      - name: Build APK
         run: gradle --no-daemon assembleDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: droidime-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 7
+      - name: Replace the single latest release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete latest --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
+          fi
+          gh release create latest app/build/outputs/apk/debug/app-debug.apk \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "DroidIME latest" \
+            --notes "Latest installable DroidIME APK. This release is replaced on every successful main build."
