@@ -44,6 +44,10 @@ class DroidImeService : InputMethodService() {
 
     private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
 
+    // Vector icons drawn on keys instead of font glyphs, so they look the same on every device
+    // (the globe emoji, for one, renders as a coloured picture on Android).
+    private enum class KeyGlyph { SHIFT, SHIFT_ON, CAPS, DELETE, ENTER, GLOBE, NUMBER_PAD }
+
     private class Palette(
         val background: Int,
         val key: Int,
@@ -65,15 +69,17 @@ class DroidImeService : InputMethodService() {
         enterText = Color.WHITE,
         hint = Color.rgb(105, 113, 128)
     )
+    // Dark values are sampled from Gboard's dark theme: special keys (shift, delete, ?123, enter,
+    // comma, period) are lighter than letter keys, and the enter key is not accent-coloured.
     private val darkPalette = Palette(
-        background = Color.rgb(24, 25, 28),
-        key = Color.rgb(62, 64, 70),
-        special = Color.rgb(44, 46, 51),
+        background = Color.rgb(31, 31, 31),
+        key = Color.rgb(57, 57, 57),
+        special = Color.rgb(71, 71, 71),
         active = Color.rgb(86, 104, 150),
-        enter = Color.rgb(96, 130, 214),
-        text = Color.rgb(234, 236, 241),
-        enterText = Color.WHITE,
-        hint = Color.rgb(160, 166, 178)
+        enter = Color.rgb(71, 71, 71),
+        text = Color.rgb(227, 227, 227),
+        enterText = Color.rgb(227, 227, 227),
+        hint = Color.rgb(199, 199, 199)
     )
 
     private var palette = lightPalette
@@ -469,8 +475,6 @@ class DroidImeService : InputMethodService() {
 
     private fun dpf(value: Float): Float = value * resources.displayMetrics.density
 
-    private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
-
     // A single drawn key. The rect is filled in during layout; null spacer slots have no cell.
     private class Cell(
         val label: String,
@@ -481,6 +485,8 @@ class DroidImeService : InputMethodService() {
         val icon: ToolIcon? = null,
         val emojiFace: Boolean = false,
         val isDelete: Boolean = false,
+        val glyph: KeyGlyph? = null,
+        val pill: Boolean = false,
         val rect: RectF = RectF(),
         // Gap-free hit area: tiles the whole keyboard so no tap lands on dead space.
         val touchRect: RectF = RectF()
@@ -521,6 +527,7 @@ class DroidImeService : InputMethodService() {
             strokeJoin = Paint.Join.ROUND
         }
         private val iconFill = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val mediumFace: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         private val shape = GradientDrawable()
         private val cornerRadius = dpf(6f)
 
@@ -650,7 +657,12 @@ class DroidImeService : InputMethodService() {
                 else -> SHIFT
             }
             val style = if (shifted || shiftLocked) KeyStyle.ACTIVE else KeyStyle.SPECIAL
-            return Cell(label, style, null, action = { onShiftTap() })
+            val glyph = when {
+                shiftLocked -> KeyGlyph.CAPS
+                shifted -> KeyGlyph.SHIFT_ON
+                else -> KeyGlyph.SHIFT
+            }
+            return Cell(label, style, null, glyph = glyph, action = { onShiftTap() })
         }
 
         private fun pageKeyCell(): Cell {
@@ -662,18 +674,19 @@ class DroidImeService : InputMethodService() {
         }
 
         private fun deleteCell(): Cell =
-            Cell(DELETE, KeyStyle.SPECIAL, null, isDelete = true, action = { deleteOne() })
+            Cell(DELETE, KeyStyle.SPECIAL, null, isDelete = true, glyph = KeyGlyph.DELETE,
+                action = { deleteOne() })
 
         private fun bottomRow(): List<Pair<Float, Cell?>> {
             val slots = mutableListOf<Pair<Float, Cell?>>()
             if (numberPad) {
-                slots.add(1.25f to Cell("?123", KeyStyle.SPECIAL, null, action = {
+                slots.add(1.25f to Cell("?123", KeyStyle.SPECIAL, null, pill = true, action = {
                     numberPad = false
                     symbols = true
                     symbolPage = 0
                     renderKeyboard()
                 }))
-                slots.add(1.25f to Cell("ABC", KeyStyle.SPECIAL, null, action = {
+                slots.add(1.25f to Cell("ABC", KeyStyle.SPECIAL, null, pill = true, action = {
                     numberPad = false
                     symbols = false
                     if (!shiftLocked) shifted = computeAutoShift()
@@ -691,12 +704,9 @@ class DroidImeService : InputMethodService() {
                     else -> ","
                 }
                 val rightSide = if (morePage) ">" else "."
-                val spaceLabel = when {
-                    symbols -> "space"
-                    language == Language.THAI -> "ไทย"
-                    else -> "English"
-                }
-                slots.add(1.5f to Cell(if (symbols) "ABC" else "?123", KeyStyle.SPECIAL, null, action = {
+                // Gboard keeps the language name on the space bar on the symbol pages too.
+                val spaceLabel = if (language == Language.THAI) "ไทย" else "English"
+                slots.add(1.5f to Cell(if (symbols) "ABC" else "?123", KeyStyle.SPECIAL, null, pill = true, action = {
                     symbols = !symbols
                     symbolPage = 0
                     if (!shiftLocked) shifted = computeAutoShift()
@@ -705,42 +715,55 @@ class DroidImeService : InputMethodService() {
                 val emojiKey = leftSide == ","
                 slots.add(1f to Cell(
                     if (emojiKey) "" else leftSide,
-                    KeyStyle.NORMAL, null,
+                    KeyStyle.SPECIAL, null,
                     emojiFace = emojiKey,
                     action = { typeText(leftSide) },
                     longAction = if (emojiKey) ({ showEmoji() }) else null
                 ))
                 if (symbols) {
-                    slots.add(1f to Cell(NUMBER_PAD, KeyStyle.SPECIAL, null, action = {
+                    slots.add(1f to Cell(NUMBER_PAD, KeyStyle.NORMAL, null, glyph = KeyGlyph.NUMBER_PAD, action = {
                         symbols = false
                         numberPad = true
                         renderKeyboard()
                     }))
                 } else {
-                    slots.add(1f to Cell(GLOBE, KeyStyle.SPECIAL, null,
+                    slots.add(1f to Cell(GLOBE, KeyStyle.NORMAL, null, glyph = KeyGlyph.GLOBE,
                         longAction = { showKeyboardPicker() },
                         action = { switchLanguage() }))
                 }
                 slots.add(4f to Cell(spaceLabel, KeyStyle.SPACE, null, action = { typeSpace() }))
-                slots.add(1f to Cell(rightSide, KeyStyle.NORMAL, null, action = { typeText(rightSide) }))
+                slots.add(1f to Cell(rightSide, KeyStyle.SPECIAL, null, action = { typeText(rightSide) }))
                 slots.add(1.5f to enterCell())
             }
             return slots
         }
 
-        private fun enterCell(): Cell =
-            Cell(enterLabel(), KeyStyle.ENTER, null, action = { sendEnter() })
-
-        // Row count of the language's letters page (content rows + optional number row + bottom),
-        // used as the fixed reference for key height across every page.
-        private fun referenceRowCount(): Int {
-            val letterRows = if (language == Language.THAI) thaiRows.size else englishRows.size
-            val numberRowOn = preferences.getBoolean(
-                if (language == Language.THAI) "number_row_th" else "number_row_en",
-                if (language == Language.THAI) false else true
-            )
-            return letterRows + (if (numberRowOn) 1 else 0) + 1
+        private fun enterCell(): Cell {
+            val label = enterLabel()
+            return Cell(label, KeyStyle.ENTER, null, pill = true,
+                glyph = if (label == ENTER) KeyGlyph.ENTER else null,
+                action = { sendEnter() })
         }
+
+        private fun numberRowOn(): Boolean =
+            if (language == Language.THAI) preferences.getBoolean("number_row_th", false)
+            else preferences.getBoolean("number_row_en", true)
+
+        // Row heights and the gap between rows as measured on Gboard (1080px-wide screen, block
+        // 678px tall): the key block always fills the same height, so pages with fewer rows get
+        // taller keys and wider gaps rather than leaving empty space. Returns the content rows'
+        // heights (the bottom row is added separately) and the gap, in reference pixels.
+        private fun rowSpec(contentRows: Int, numberRowFirst: Boolean): Pair<List<Float>, Float> =
+            when {
+                contentRows == 3 -> List(3) { 134.5f } to 50f
+                contentRows == 4 && numberRowFirst -> listOf(110f, 118f, 118f, 118f) to 22.5f
+                contentRows == 4 -> List(4) { 115.5f } to 23f
+                else -> {
+                    val gap = 20f
+                    val h = (REF_BLOCK_H - REF_BOTTOM_ROW_H - gap * contentRows) / contentRows
+                    List(contentRows) { h } to gap
+                }
+            }
 
         private fun layoutRows(rows: List<List<Pair<Float, Cell?>>>) {
             val flat = mutableListOf<Cell>()
@@ -748,25 +771,23 @@ class DroidImeService : InputMethodService() {
                 cells = flat
                 return
             }
-            val padX = dpf(6.4f)
+            val padX = dpf(6.7f)
             val padTop = dpf(4f)
             val padBottom = dpf(8f) + navigationInset
-            val gap = dpf(8f)
-            val keyGap = dpf(2.5f)
             val availW = (width - padX * 2f).coerceAtLeast(1f)
             val availH = (height - padTop - padBottom).coerceAtLeast(1f)
-            // Key height comes from the language's letters page, not the current page's row count.
-            // The symbols and number-pad pages have fewer rows, so sizing off rows.size would grow
-            // the bottom row when switching pages; anchoring to the bottom leaves the extra space on
-            // top instead, keeping the bottom row the same size everywhere.
-            val refRows = referenceRowCount()
-            val rowH = ((availH - gap * (refRows - 1)) / refRows).coerceAtLeast(1f)
+            val contentRows = rows.size - 1
+            val letterPage = !numberPad && !symbols
+            val (contentHeights, refGap) = rowSpec(contentRows, letterPage && numberRowOn())
+            val refHeights = contentHeights + REF_BOTTOM_ROW_H
+            val scale = availH / (refHeights.sum() + refGap * contentRows)
+            val gap = refGap * scale
             val lastRow = rows.lastIndex
-            val blockH = rows.size * rowH + gap * lastRow
-            val startTop = padTop + (availH - blockH).coerceAtLeast(0f)
+            var nextTop = padTop
             rows.forEachIndexed { index, row ->
-                val top = startTop + index * (rowH + gap)
-                val bottom = top + rowH
+                val top = nextTop
+                val bottom = top + refHeights[index] * scale
+                nextTop = bottom + gap
                 // Vertical touch band reaches to the gap midpoint so rows tile with no dead strip;
                 // the first and last bands extend to the view edges.
                 val bandTop = if (index == 0) 0f else top - gap / 2f
@@ -774,13 +795,16 @@ class DroidImeService : InputMethodService() {
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat()
                 if (totalWeight <= 0f) return@forEachIndexed
                 val unit = availW / totalWeight
+                // Gboard insets each key by a fixed share of the row's unit width, so the gap
+                // between keys is ~12px in the 12-key Thai rows and ~14px in the 10-key rows.
+                val inset = unit * KEY_INSET
                 val firstReal = row.indexOfFirst { it.second != null }
                 val lastReal = row.indexOfLast { it.second != null }
                 var x = padX
                 row.forEachIndexed { slotIndex, (weight, cell) ->
                     val slotRight = x + weight * unit
                     if (cell != null) {
-                        cell.rect.set(x + keyGap, top, slotRight - keyGap, bottom)
+                        cell.rect.set(x + inset, top, slotRight - inset, bottom)
                         // Horizontal touch spans the full slot; the outermost keys also absorb
                         // the side padding and any indent spacer so the whole row is clickable.
                         val touchLeft = if (slotIndex == firstReal) 0f else x
@@ -814,47 +838,143 @@ class DroidImeService : InputMethodService() {
                 cell.rect.left.toInt(), cell.rect.top.toInt(),
                 cell.rect.right.toInt(), cell.rect.bottom.toInt()
             )
-            shape.cornerRadius = cornerRadius
+            shape.cornerRadius = if (cell.pill) cell.rect.height() / 2f else cornerRadius
             shape.draw(canvas)
 
+            val ink = if (cell.style == KeyStyle.ENTER) colors.enterText else colors.text
+            val glyph = cell.glyph
             if (cell.emojiFace) {
                 drawEmojiKey(canvas, cell, colors)
+            } else if (glyph != null) {
+                drawKeyGlyph(canvas, cell, glyph, ink)
             } else {
-                textPaint.color = if (cell.style == KeyStyle.ENTER) colors.enterText else colors.text
-                textPaint.textSize = sp(
-                    when {
-                        cell.style == KeyStyle.SPACE -> 12f
-                        cell.label.length > 4 -> 11f
-                        cell.label.length > 1 -> 14f
-                        else -> 20f
-                    }
-                )
-                val metrics = textPaint.fontMetrics
-                val baseline = cell.rect.centerY() - (metrics.ascent + metrics.descent) / 2f
-                canvas.drawText(cell.label, cell.rect.centerX(), baseline, textPaint)
+                drawKeyText(canvas, cell.label, cell.style, cell.rect, ink)
             }
 
             val hint = cell.hint
             if (hint != null) {
                 hintPaint.color = colors.hint
-                hintPaint.textSize = sp(10f)
-                val hm = hintPaint.fontMetrics
-                canvas.drawText(
-                    hint,
-                    cell.rect.right - dp(4),
-                    cell.rect.top + dp(2) - hm.ascent,
-                    hintPaint
-                )
+                hintPaint.textSize = dpf(10.5f)
+                // Gboard puts the hint's baseline ~11dp below the key top, 4dp in from the right.
+                canvas.drawText(hint, cell.rect.right - dp(4), cell.rect.top + dpf(11f), hintPaint)
+            }
+        }
+
+        // Text sizes are in dp (not sp) so they match Gboard's fixed key text regardless of the
+        // system font scale; 26dp = the 74px letters measured on a 2.8125-density screen.
+        private fun drawKeyText(canvas: Canvas, label: String, style: KeyStyle, rect: RectF, ink: Int) {
+            val isPageLabel = label == "?123" || label == "ABC"
+            val sizeDp = when {
+                style == KeyStyle.SPACE -> 13.5f
+                isPageLabel -> 18.5f
+                label == MORE_SYMBOLS -> 15.5f
+                style == KeyStyle.ENTER -> 15f
+                label.length > 1 -> 14f
+                else -> 26f
+            }
+            textPaint.color = ink
+            textPaint.typeface = if (isPageLabel || style == KeyStyle.ENTER) mediumFace else Typeface.DEFAULT
+            textPaint.textSize = dpf(sizeDp)
+            val metrics = textPaint.fontMetrics
+            val baseline = rect.centerY() - (metrics.ascent + metrics.descent) / 2f
+            canvas.drawText(label, rect.centerX(), baseline, textPaint)
+            textPaint.typeface = Typeface.DEFAULT
+        }
+
+        // Icon sizes are Gboard's measured outlines (dp = px / 2.8125): shift 20.6x19.9,
+        // delete 19.9x16.4, globe 19.6, enter 19.9x12.4. Stroke is inset so the outer edge matches.
+        private fun drawKeyGlyph(canvas: Canvas, cell: Cell, glyph: KeyGlyph, ink: Int) {
+            val cx = cell.rect.centerX()
+            val cy = cell.rect.centerY()
+            val sw = dpf(1.6f)
+            iconStroke.color = ink
+            iconStroke.strokeWidth = sw
+            iconFill.color = ink
+            when (glyph) {
+                KeyGlyph.SHIFT, KeyGlyph.SHIFT_ON, KeyGlyph.CAPS -> {
+                    val hw = (dpf(20.6f) - sw) / 2f
+                    val hh = (dpf(19.9f) - sw) / 2f
+                    val stemBottom = if (glyph == KeyGlyph.CAPS) hh * 0.6f else hh
+                    val stem = hw * 0.45f
+                    val arrow = Path().apply {
+                        moveTo(cx, cy - hh)
+                        lineTo(cx + hw, cy)
+                        lineTo(cx + stem, cy)
+                        lineTo(cx + stem, cy + stemBottom)
+                        lineTo(cx - stem, cy + stemBottom)
+                        lineTo(cx - stem, cy)
+                        lineTo(cx - hw, cy)
+                        close()
+                    }
+                    if (glyph != KeyGlyph.SHIFT) canvas.drawPath(arrow, iconFill)
+                    canvas.drawPath(arrow, iconStroke)
+                    if (glyph == KeyGlyph.CAPS) {
+                        canvas.drawLine(cx - stem, cy + hh, cx + stem, cy + hh, iconStroke)
+                    }
+                }
+                KeyGlyph.DELETE -> {
+                    val hw = (dpf(19.9f) - sw) / 2f
+                    val hh = (dpf(16.4f) - sw) / 2f
+                    val tag = Path().apply {
+                        moveTo(cx - hw, cy)
+                        lineTo(cx - hw * 0.35f, cy - hh)
+                        lineTo(cx + hw, cy - hh)
+                        lineTo(cx + hw, cy + hh)
+                        lineTo(cx - hw * 0.35f, cy + hh)
+                        close()
+                    }
+                    canvas.drawPath(tag, iconStroke)
+                    val xc = cx + hw * 0.33f
+                    val d = hh * 0.38f
+                    canvas.drawLine(xc - d, cy - d, xc + d, cy + d, iconStroke)
+                    canvas.drawLine(xc - d, cy + d, xc + d, cy - d, iconStroke)
+                }
+                KeyGlyph.GLOBE -> {
+                    val r = (dpf(19.6f) - sw) / 2f
+                    canvas.drawCircle(cx, cy, r, iconStroke)
+                    val rx = r * 0.45f
+                    canvas.drawOval(cx - rx, cy - r, cx + rx, cy + r, iconStroke)
+                    canvas.drawLine(cx - r, cy, cx + r, cy, iconStroke)
+                    val lat = r * 0.5f
+                    val half = r * 0.866f
+                    canvas.drawLine(cx - half, cy - lat, cx + half, cy - lat, iconStroke)
+                    canvas.drawLine(cx - half, cy + lat, cx + half, cy + lat, iconStroke)
+                }
+                KeyGlyph.ENTER -> {
+                    val hw = (dpf(19.9f) - sw) / 2f
+                    val hh = (dpf(12.4f) - sw) / 2f
+                    val head = hh * 0.5f
+                    val lineY = cy + hh - head
+                    val tipX = cx - hw
+                    val path = Path().apply {
+                        moveTo(cx + hw, cy - hh)
+                        lineTo(cx + hw, lineY)
+                        lineTo(tipX, lineY)
+                        moveTo(tipX + head, lineY - head)
+                        lineTo(tipX, lineY)
+                        lineTo(tipX + head, lineY + head)
+                    }
+                    canvas.drawPath(path, iconStroke)
+                }
+                KeyGlyph.NUMBER_PAD -> {
+                    // Two stacked rows of digits, 60px tall as measured, centred on the key.
+                    textPaint.color = ink
+                    textPaint.typeface = Typeface.DEFAULT_BOLD
+                    textPaint.textSize = dpf(11.8f)
+                    canvas.drawText("1 2", cx, cy - dpf(2.3f), textPaint)
+                    canvas.drawText("3 4", cx, cy + dpf(10.5f), textPaint)
+                    textPaint.typeface = Typeface.DEFAULT
+                }
             }
         }
 
         private fun drawEmojiKey(canvas: Canvas, cell: Cell, colors: Palette) {
             val cx = cell.rect.centerX()
-            val h = cell.rect.height()
-            val faceR = h * 0.17f
-            val faceCy = cell.rect.centerY() - h * 0.12f
+            // Gboard's face is 28px (10dp) across, centred 13dp below the key top.
+            val faceR = dpf(4.5f)
+            val faceCy = cell.rect.top + dpf(13f)
             iconStroke.color = colors.text
-            iconStroke.strokeWidth = (faceR * 0.16f).coerceAtLeast(1.2f * resources.displayMetrics.density)
+            iconStroke.strokeWidth = dpf(1f)
             canvas.drawCircle(cx, faceCy, faceR, iconStroke)
             val eyeY = faceCy - faceR * 0.28f
             val eyeDx = faceR * 0.42f
@@ -866,10 +986,8 @@ class DroidImeService : InputMethodService() {
                     cx + faceR * 0.55f, faceCy + faceR * 0.72f, 25f, 130f)
             }
             canvas.drawPath(smile, iconStroke)
-            textPaint.color = colors.text
-            textPaint.textSize = sp(11f)
-            val m = textPaint.fontMetrics
-            canvas.drawText(",", cx, cell.rect.centerY() + h * 0.30f - (m.ascent + m.descent) / 2f, textPaint)
+            // The comma is ordinary key text, in the same place as on the symbol pages.
+            drawKeyText(canvas, ",", KeyStyle.SPECIAL, cell.rect, colors.text)
         }
 
         private fun drawToolbarIcon(canvas: Canvas, cell: Cell, colors: Palette) {
@@ -1098,6 +1216,12 @@ class DroidImeService : InputMethodService() {
         private const val CAPS = "\u2EA6"
         private const val MORE_SYMBOLS = "=\\<"
         private const val NUMBER_PAD = "12/34"
+
+        // Gboard reference geometry (1080px-wide screen): the key block is 678px tall with a
+        // 124px bottom row, and each key is inset by ~6.7% of its row's unit width per side.
+        private const val REF_BLOCK_H = 678f
+        private const val REF_BOTTOM_ROW_H = 124f
+        private const val KEY_INSET = 0.067f
 
         private val SETTINGS_KEYS = setOf(
             "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints"

@@ -17,6 +17,11 @@
 - Cover every variant, not a representative one: each language, each row, each state.
 - Do not report something verified unless it was actually checked; state plainly what was not.
 
+## Matching Gboard
+
+- Measure reference screenshots, don't eyeball: label connected components of non-background pixels to get key rects, then compare against `layoutRows` output. Reference device is 1080px wide at density 2.8125 (384dp); the measured constants are in `layoutRows`/`rowSpec`/`drawKeyGlyph`.
+- The cloud sandbox has no Android SDK, so Kotlin changes cannot be compiled or rendered there; the GitHub `Android Release` run is the compile check, so look at it after pushing.
+
 ## Maintaining this file
 
 - Update AGENTS.md whenever a durable rule or lesson emerges; keep it lean and avoid redundant detail.
