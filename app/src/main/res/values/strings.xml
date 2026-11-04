@@ -7,4 +7,16 @@
     <string name="setup_message">Enable DroidIME in Android keyboard settings, then select it as your current keyboard.</string>
     <string name="open_settings">Open keyboard settings</string>
     <string name="select_keyboard">Select keyboard</string>
+    <string name="check_updates">Check for updates</string>
+    <string name="update_current">Version %1$s</string>
+    <string name="update_checking">Checking for updates…</string>
+    <string name="update_latest">Already up to date</string>
+    <string name="update_available">Update %1$d is available</string>
+    <string name="update_allow_installs">Allow DroidIME to install updates, then check again</string>
+    <string name="update_downloading">Downloading update…</string>
+    <string name="update_installing">Opening installer…</string>
+    <string name="update_download_failed">Download failed</string>
+    <string name="update_check_failed">Could not check for updates</string>
+    <string name="update_version_missing">Release version is missing</string>
+    <string name="update_apk_missing">Release APK is missing</string>
 </resources>
