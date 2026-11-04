@@ -67,7 +67,7 @@ jobs:
           gh release create latest DroidIME.apk \
             --repo "${GITHUB_REPOSITORY}" \
             --title "DroidIME ${VERSION_NAME}" \
-            --notes "DroidIME ${VERSION_NAME} (versionCode ${VERSION_CODE})"
+            --notes "DroidIME ${VERSION_NAME} (versionCode=${VERSION_CODE})"
           rm -f DroidIME.apk
       - name: Remove signing key
         if: always() && github.event_name != 'pull_request'
