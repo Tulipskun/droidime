@@ -152,7 +152,7 @@ class MainActivity : Activity() {
         content.addView(languageCard, sectionParams())
 
         val sizeCard = card()
-        val currentHeight = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
+        val currentHeight = preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360)
         val heightLabel = sectionTitle("Keyboard height · ${currentHeight} dp")
         sizeCard.addView(heightLabel)
         sizeCard.addView(SeekBar(this).apply {
