@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">DroidIME</string>
+    <string name="keyboard_name">DroidIME Thai-English</string>
+    <string name="thai">ไทย</string>
+    <string name="english">English</string>
+    <string name="setup_title">DroidIME</string>
+    <string name="setup_message">Enable DroidIME in Android keyboard settings, then select it as your current keyboard.</string>
+    <string name="open_settings">Open keyboard settings</string>
+    <string name="select_keyboard">Select keyboard</string>
+</resources>
