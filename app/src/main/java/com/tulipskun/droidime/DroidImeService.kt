@@ -86,12 +86,17 @@ class DroidImeService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         val flags = info?.inputType ?: InputType.TYPE_CLASS_TEXT
-        shifted = flags and (InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
-            InputType.TYPE_TEXT_FLAG_CAP_WORDS or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS) != 0
         symbols = false
         if (::keyboard.isInitialized) {
             loadSettings()
+            shifted = language == Language.ENGLISH && flags and (
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                    InputType.TYPE_TEXT_FLAG_CAP_WORDS or
+                    InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                ) != 0
             renderKeyboard()
+        } else {
+            shifted = false
         }
     }
 
