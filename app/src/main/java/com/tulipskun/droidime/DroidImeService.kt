@@ -73,10 +73,12 @@ class DroidImeService : InputMethodService() {
                 insets
             }
         }
-        if (Build.VERSION.SDK_INT >= 29) {
-            window?.isNavigationBarContrastEnforced = false
+        getWindow().window?.let { imeWindow ->
+            if (Build.VERSION.SDK_INT >= 29) {
+                imeWindow.isNavigationBarContrastEnforced = false
+            }
+            imeWindow.navigationBarColor = Color.rgb(218, 222, 230)
         }
-        window?.navigationBarColor = Color.rgb(218, 222, 230)
         loadSettings()
         renderKeyboard()
         keyboard.requestApplyInsets()
