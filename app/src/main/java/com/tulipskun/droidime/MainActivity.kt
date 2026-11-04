@@ -3,17 +3,23 @@ package com.tulipskun.droidime
 import android.app.Activity
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -26,7 +32,8 @@ import java.util.concurrent.Executors
 class MainActivity : Activity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var status: TextView
-    private lateinit var updateButton: Button
+    private lateinit var setupStatus: TextView
+    private lateinit var updateButton: TextView
     private var downloadId = -1L
     private var receiverRegistered = false
 
@@ -41,6 +48,7 @@ class MainActivity : Activity() {
             val uri = manager.getUriForDownloadedFile(downloadId)
             if (uri == null) {
                 status.text = getString(R.string.update_download_failed)
+                updateButton.isEnabled = true
                 return
             }
             status.text = getString(R.string.update_installing)
@@ -55,62 +63,75 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(28, 24, 28, 24)
-            setBackgroundColor(0xFFF4F5F8.toInt())
+            setPadding(dp(20), dp(18), dp(20), dp(24))
         }
 
-        root.addView(TextView(this).apply {
-            text = getString(R.string.setup_title)
+        content.addView(TextView(this).apply {
+            text = "DroidIME"
             textSize = 30f
-            setTextColor(0xFF182033.toInt())
-            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(27, 35, 52))
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        })
+        content.addView(TextView(this).apply {
+            text = "Keyboard settings"
+            textSize = 14f
+            setTextColor(Color.rgb(105, 113, 128))
+            setPadding(0, dp(2), 0, dp(18))
         })
 
-        root.addView(TextView(this).apply {
-            text = getString(R.string.setup_message)
+        val setupCard = card()
+        setupCard.addView(sectionTitle("Keyboard setup"))
+        setupStatus = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(82, 91, 108))
+            setPadding(0, dp(4), 0, dp(12))
+        }
+        setupCard.addView(setupStatus)
+        setupCard.addView(actionButton("Enable DroidIME") {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        })
+        setupCard.addView(actionButton("Select DroidIME") {
+            val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            manager.showInputMethodPicker()
+        })
+        content.addView(setupCard, sectionParams())
+
+        val testCard = card()
+        testCard.addView(sectionTitle("Try the keyboard"))
+        testCard.addView(TextView(this).apply {
+            text = "Tap the field and type to verify the active keyboard."
+            textSize = 13f
+            setTextColor(Color.rgb(105, 113, 128))
+            setPadding(0, 0, 0, dp(10))
+        })
+        testCard.addView(EditText(this).apply {
+            hint = "Type something…"
             textSize = 16f
-            setTextColor(0xFF596174.toInt())
-            gravity = Gravity.CENTER
-            setPadding(0, 12, 0, 16)
+            minLines = 2
+            maxLines = 4
+            gravity = Gravity.TOP
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(Color.rgb(245, 247, 251), dp(10))
         })
+        content.addView(testCard, sectionParams())
 
-        root.addView(Button(this).apply {
-            text = getString(R.string.open_settings)
-            setOnClickListener { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
-        })
-
-        root.addView(Button(this).apply {
-            text = getString(R.string.select_keyboard)
-            setOnClickListener {
-                val imm = getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                imm.showInputMethodPicker()
-            }
-        })
-
-        root.addView(TextView(this).apply {
-            text = getString(R.string.languages_title)
-            textSize = 20f
-            setTextColor(0xFF182033.toInt())
-            setPadding(0, 20, 0, 4)
-        })
-
-        val thaiEnabled = preferences.getBoolean("language_th", true)
-        val englishEnabled = preferences.getBoolean("language_en", true)
-
+        val languageCard = card()
+        languageCard.addView(sectionTitle("Languages"))
         val thaiCheck = CheckBox(this).apply {
-            text = getString(R.string.thai)
-            isChecked = thaiEnabled
-            setTextColor(0xFF182033.toInt())
+            text = "ไทย"
+            textSize = 15f
+            isChecked = preferences.getBoolean("language_th", true)
         }
         val englishCheck = CheckBox(this).apply {
-            text = getString(R.string.english)
-            isChecked = englishEnabled
-            setTextColor(0xFF182033.toInt())
+            text = "English"
+            textSize = 15f
+            isChecked = preferences.getBoolean("language_en", true)
         }
-
         thaiCheck.setOnCheckedChangeListener { _, checked ->
             if (!checked && !englishCheck.isChecked) {
                 thaiCheck.isChecked = true
@@ -125,52 +146,119 @@ class MainActivity : Activity() {
                 preferences.edit().putBoolean("language_en", checked).apply()
             }
         }
-        root.addView(thaiCheck)
-        root.addView(englishCheck)
+        languageCard.addView(thaiCheck)
+        languageCard.addView(englishCheck)
+        content.addView(languageCard, sectionParams())
 
+        val sizeCard = card()
         val currentHeight = preferences.getInt("keyboard_height_dp", 280).coerceIn(220, 360)
-        val heightLabel = TextView(this).apply {
-            text = getString(R.string.keyboard_height, currentHeight)
-            textSize = 16f
-            setTextColor(0xFF182033.toInt())
-            setPadding(0, 16, 0, 4)
-        }
-        root.addView(heightLabel)
-
-        root.addView(SeekBar(this).apply {
+        val heightLabel = sectionTitle("Keyboard height · ${currentHeight} dp")
+        sizeCard.addView(heightLabel)
+        sizeCard.addView(SeekBar(this).apply {
             max = 140
             progress = currentHeight - 220
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     val height = 220 + progress
-                    heightLabel.text = getString(R.string.keyboard_height, height)
+                    heightLabel.text = "Keyboard height · ${height} dp"
                     preferences.edit().putInt("keyboard_height_dp", height).apply()
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         })
+        content.addView(sizeCard, sectionParams())
 
+        val updateCard = card()
+        updateCard.addView(sectionTitle("App update"))
         status = TextView(this).apply {
             text = getString(R.string.update_current, BuildConfig.VERSION_NAME)
-            textSize = 14f
-            setTextColor(0xFF596174.toInt())
-            gravity = Gravity.CENTER
-            setPadding(0, 20, 0, 8)
+            textSize = 13f
+            setTextColor(Color.rgb(105, 113, 128))
+            setPadding(0, dp(2), 0, dp(10))
         }
-        root.addView(status)
+        updateCard.addView(status)
+        updateButton = actionButton("Check for updates") { checkForUpdate() }
+        updateCard.addView(updateButton)
+        content.addView(updateCard, sectionParams())
 
-        updateButton = Button(this).apply {
-            text = getString(R.string.check_updates)
-            setOnClickListener { checkForUpdate() }
-        }
-        root.addView(updateButton)
-
-        setContentView(ScrollView(this).apply {
+        val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(root)
-        })
+            clipToPadding = false
+            addView(content)
+            setBackgroundColor(Color.rgb(244, 246, 250))
+            setOnApplyWindowInsetsListener { view, insets ->
+                view.setPadding(
+                    dp(20),
+                    insets.systemWindowInsetTop + dp(14),
+                    dp(20),
+                    insets.systemWindowInsetBottom + dp(18)
+                )
+                insets
+            }
+        }
+        setContentView(scroll)
+        scroll.requestApplyInsets()
     }
+
+    override fun onResume() {
+        super.onResume()
+        if (::setupStatus.isInitialized) refreshSetupStatus()
+    }
+
+    private fun refreshSetupStatus() {
+        val component = ComponentName(this, DroidImeService::class.java).flattenToString()
+        val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        val enabled = manager.enabledInputMethodList.any { it.id == component }
+        val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD) == component
+        setupStatus.text = when {
+            selected -> "DroidIME is enabled and selected."
+            enabled -> "DroidIME is enabled. Select it as the current keyboard."
+            else -> "DroidIME is not enabled yet."
+        }
+        setupStatus.setTextColor(if (selected) Color.rgb(36, 125, 84) else Color.rgb(82, 91, 108))
+    }
+
+    private fun card() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(15), dp(16), dp(16))
+        background = rounded(Color.WHITE, dp(16))
+        elevation = dp(1).toFloat()
+    }
+
+    private fun sectionTitle(value: String) = TextView(this).apply {
+        text = value
+        textSize = 17f
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        setTextColor(Color.rgb(31, 40, 58))
+        setPadding(0, 0, 0, dp(9))
+    }
+
+    private fun actionButton(value: String, action: () -> Unit) = TextView(this).apply {
+        text = value
+        textSize = 14f
+        gravity = Gravity.CENTER
+        setTextColor(Color.WHITE)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = rounded(Color.rgb(49, 91, 190), dp(10))
+        isClickable = true
+        isFocusable = true
+        setOnClickListener { action() }
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(7)
+        }
+    }
+
+    private fun sectionParams() = LinearLayout.LayoutParams(-1, -2).apply {
+        bottomMargin = dp(13)
+    }
+
+    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = radius.toFloat()
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun checkForUpdate() {
         updateButton.isEnabled = false
