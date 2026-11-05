@@ -659,7 +659,7 @@ class DroidImeService : InputMethodService() {
         val lastKeys = near(xs.last(), ys.last())
         if (firstKeys.isEmpty() || lastKeys.isEmpty()) return emptyList()
         var maxFreq = 1
-        for (f in dict.freqs) if (f > maxFreq) maxFreq = f
+        if (dict != null) for (f in dict.freqs) if (f > maxFreq) maxFreq = f
         // The first and last few points count five times as much: where a glide starts and ends
         // says most about the word (tuned on simulated glides over the dictionary, ~93% top-1).
         val pointWeights = FloatArray(n) { if (it < 3 || it >= n - 3) 5f else 1f }
@@ -710,7 +710,6 @@ class DroidImeService : InputMethodService() {
                 dict.freqs[i] / maxFreq.toFloat()
             }
             scored.add((best - common * 0.8f) to word)
-        }
         }
         // Learned vocabulary joins the same contest; usage count breaks near-ties in its favour.
         for ((word, count) in userWords) {
