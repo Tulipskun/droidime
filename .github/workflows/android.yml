@@ -43,6 +43,8 @@ jobs:
         run: |
           test -s .signing-key/release.keystore
           install -m 600 .signing-key/release.keystore app/release.keystore
+      - name: Run unit tests
+        run: gradle --no-daemon testDebugUnitTest
       - name: Build APK
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
