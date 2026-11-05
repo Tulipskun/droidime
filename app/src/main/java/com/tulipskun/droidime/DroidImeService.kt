@@ -2472,6 +2472,9 @@ class DroidImeService : InputMethodService() {
                             return true
                         }
                     }
+                    // Once Delete is pressed, keep the repeat gesture captured until
+                    // ACTION_UP or ACTION_CANCEL. Small pointer drift must not cancel deletion.
+                    if (pressed?.isDelete == true) return true
                     val cell = cellAt(event.x, event.y)
                     if (cell !== pressed) {
                         pressed = cell
