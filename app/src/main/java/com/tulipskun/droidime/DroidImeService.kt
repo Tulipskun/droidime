@@ -33,6 +33,7 @@ import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputMethodManager
 
 class DroidImeService : InputMethodService() {
@@ -235,6 +236,13 @@ class DroidImeService : InputMethodService() {
     private var deleteRepeat: Runnable? = null
     private var deleteHold: Runnable? = null
     private var deleteSpeedMs = DELETE_START_MS
+    private var spaceDragStartX = 0f
+    private var spaceDragStartCursor = -1
+    private var spaceDragLastCursor = -1
+    private var lastTypedToken: String? = null
+    private var lastTypedAt = 0L
+    private val correctionCounts = linkedMapOf<String, Int>()
+    private var glideCorrectionCount = 0
 
     private val thaiRows = listOf(
         listOf("ๅ", "/", "_", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
@@ -309,6 +317,7 @@ class DroidImeService : InputMethodService() {
         super.onCreate()
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
         loadUserWords()
+        loadCorrectionStats()
         loadClips()
         val clipboard = clipboardManager()
         if (clipboard != null) {
@@ -924,6 +933,9 @@ class DroidImeService : InputMethodService() {
 
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
+        if (glideCommitted != null) {
+            preferences.edit().putInt(GLIDE_ALTERNATIVES, preferences.getInt(GLIDE_ALTERNATIVES, 0) + 1).apply()
+        }
         connection.beginBatchEdit()
         connection.deleteSurroundingText(suggestion.replaceLen, 0)
         connection.commitText(suggestion.text + suggestion.append, 1)
@@ -1197,7 +1209,34 @@ class DroidImeService : InputMethodService() {
 
     private fun typeText(value: String) {
         currentInputConnection?.commitText(value, 1)
+        if (fieldKind == FieldKind.TEXT && value.isNotBlank() && value.length <= 4) {
+            lastTypedToken = value
+            lastTypedAt = SystemClock.elapsedRealtime()
+        }
         afterTextChanged()
+    }
+
+    private fun loadCorrectionStats() {
+        correctionCounts.clear()
+        val raw = preferences.getString(CORRECTION_STATS, null) ?: return
+        raw.lineSequence().forEach { line ->
+            val split = line.lastIndexOf('\t')
+            if (split > 0) correctionCounts[line.substring(0, split)] = line.substring(split + 1).toIntOrNull() ?: 0
+        }
+    }
+
+    private fun recordCorrection(key: String) {
+        if (fieldKind != FieldKind.TEXT || key.isBlank()) return
+        correctionCounts[key] = (correctionCounts[key] ?: 0) + 1
+        while (correctionCounts.size > 64) correctionCounts.remove(correctionCounts.keys.first())
+        preferences.edit().putString(CORRECTION_STATS,
+            correctionCounts.entries.joinToString("\n") { "${it.key}\t${it.value}" }).apply()
+    }
+
+    private fun recordGlideCorrection() {
+        if (fieldKind != FieldKind.TEXT) return
+        glideCorrectionCount++
+        preferences.edit().putInt(GLIDE_CORRECTIONS, glideCorrectionCount).apply()
     }
 
     // Two quick spaces after a word become ". " (English only).
@@ -1234,12 +1273,17 @@ class DroidImeService : InputMethodService() {
 
     private fun deleteOne(updateShift: Boolean = true) {
         val connection = currentInputConnection ?: return
+        if (lastTypedToken != null && SystemClock.elapsedRealtime() - lastTypedAt < 3500L) {
+            recordCorrection(lastTypedToken!!)
+            lastTypedToken = null
+        }
         // A word just produced by a glide (or picked from the strip) sits whole before the
         // cursor. Taking it back in one press matches Gboard, where delete removes the word the
         // suggestion strip just offered rather than its last character. This applies to the first
         // press and to the repeat that follows it, so holding delete does not nibble the word.
         val tail = glideCommitted
         if (tail != null && connection.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
+            recordGlideCorrection()
             connection.deleteSurroundingText(tail.length, 0)
             glideCommitted = null
             glideAlternatives = emptyList()
@@ -2590,6 +2634,9 @@ class DroidImeService : InputMethodService() {
         )
 
         private const val USER_DICT = "user_dict"
+        private const val CORRECTION_STATS = "correction_stats"
+        private const val GLIDE_CORRECTIONS = "glide_corrections"
+        private const val GLIDE_ALTERNATIVES = "glide_alternatives"
         private const val CLIP_DICT = "clipboard_items"
         private const val CLIP_KEEP = 12
         private const val CLIP_STORE_LIMIT = 20_000
