@@ -1692,8 +1692,8 @@ class DroidImeService : InputMethodService() {
                     if (emojiKey) "" else leftSide,
                     KeyStyle.SPECIAL, null,
                     emojiFace = emojiKey,
-                    action = { typeText(leftSide) },
-                    longAction = if (emojiKey) ({ showEmoji() }) else null
+                    action = { if (emojiKey) showEmoji() else typeText(leftSide) },
+                    longAction = if (emojiKey) ({ typeText(",") }) else null
                 ))
                 if (symbols) {
                     slots.add(1f to Cell(NUMBER_PAD, KeyStyle.NORMAL, null, glyph = KeyGlyph.NUMBER_PAD, action = {
