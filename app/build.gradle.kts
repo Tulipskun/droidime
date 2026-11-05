@@ -11,8 +11,9 @@ android {
         applicationId = "com.tulipskun.droidime"
         minSdk = 23
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.0.4"
+        // CI sets VERSION_CODE/VERSION_NAME from the workflow run number; local builds use the fallback.
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 5
+        versionName = System.getenv("VERSION_NAME") ?: "1.0.dev"
     }
 
     buildFeatures {
