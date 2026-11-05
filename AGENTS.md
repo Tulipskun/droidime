@@ -22,6 +22,13 @@
 
 - Measure reference screenshots, don't eyeball: label connected components of non-background pixels to get key rects, then compare against `layoutRows` output. Reference device is 1080px wide at density 2.8125 (384dp); the measured constants are in `layoutRows`/`rowSpec`/`drawKeyGlyph`.
 - The cloud sandbox has no Android SDK, so Kotlin changes cannot be compiled or rendered there; the GitHub `Android Release` run is the compile check, so look at it after pushing.
+- A local build is possible here (see `build_apk.sh`); `gradle testDebugUnitTest` renders the keyboard states to `app/build/render/` with Robolectric, so a layout change can be checked by looking at the PNGs.
+
+## Testing notes
+
+- `KeyboardRenderTest` renders each keyboard state to `app/build/render/<state>.png` and asserts the frame is not blank. Add a state for any new page or panel.
+- Private state is set in tests with `setField`, which walks the superclass chain — the service's fields are on the outer class, not the nested view.
+- A layout that produces zero cells renders as one flat colour; that is how the clipboard panel bug (cells never assigned) was caught. If a new render is a single colour, check that `cells` is assigned.
 
 ## Maintaining this file
 

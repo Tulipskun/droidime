@@ -60,7 +60,10 @@ class KeyboardRenderTest {
             val shifted: Boolean,
             val symbols: Boolean,
             val symbolPage: Int,
-            val numberPad: Boolean
+            val numberPad: Boolean,
+            val clip: Boolean = false,
+            val clipMenu: Boolean = false,
+            val clipEdit: Boolean = false
         )
 
         val states = listOf(
@@ -69,7 +72,11 @@ class KeyboardRenderTest {
             State("en_symbols", "ENGLISH", false, true, 0, false),
             State("en_more", "ENGLISH", false, true, 1, false),
             State("en_pad", "ENGLISH", false, false, 0, true),
-            State("th_normal", "THAI", false, false, 0, false)
+            State("th_normal", "THAI", false, false, 0, false),
+            State("clip_empty", "ENGLISH", false, false, 0, false, clip = true),
+            State("clip_items", "ENGLISH", false, false, 0, false, clip = true),
+            State("clip_menu", "ENGLISH", false, false, 0, false, clip = true, clipMenu = true),
+            State("clip_edit", "ENGLISH", false, false, 0, false, clip = true, clipEdit = true)
         )
 
         for (s in states) {
@@ -81,6 +88,19 @@ class KeyboardRenderTest {
             service.setField("symbolPage", s.symbolPage)
             service.setField("numberPad", s.numberPad)
             service.setField("navigationInset", 0)
+            if (s.file == "clip_items" || s.file == "clip_menu" || s.file == "clip_edit") {
+                service.setField("clips", ArrayList(listOf(
+                    service.clip("1", "hello world", true),
+                    service.clip("2", "second clip", false),
+                    service.clip("3", "third clip", false)
+                )))
+            } else {
+                service.setField("clips", ArrayList<Any>())
+            }
+            service.setField("clipPanelVisible", s.clip)
+            service.setField("clipMenuId", if (s.clipMenu) "2" else null)
+            service.setField("clipSelection", null)
+            service.setField("clipEdit", s.clipEdit)
 
             rebuild.invoke(view)
 
@@ -151,8 +171,30 @@ class KeyboardRenderTest {
     }
 
     companion object {
+        // The service keeps its state in a nested object, so the field may live on a superclass of
+        // the runtime class; walk up until it is found rather than assuming the first match.
         fun Any.setField(name: String, value: Any?) {
-            javaClass.getDeclaredField(name).apply { isAccessible = true }.set(this, value)
+            val field = findField(javaClass, name)
+                ?: throw NoSuchFieldException("${javaClass.name}.$name")
+            field.isAccessible = true
+            field.set(this, value)
+        }
+
+        private fun findField(cls: Class<*>?, name: String): java.lang.reflect.Field? {
+            var current = cls
+            while (current != null) {
+                current.declaredFields.firstOrNull { it.name == name }?.let { return it }
+                current = current.superclass
+            }
+            return null
+        }
+
+        // A test clip, built through the same private class the service uses.
+        fun DroidImeService.clip(id: String, text: String, pinned: Boolean): Any {
+            val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Clip")
+            val ctor = cls.declaredConstructors.first()
+            ctor.isAccessible = true
+            return ctor.newInstance(id, text, pinned, 0L)
         }
     }
 }

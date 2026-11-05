@@ -254,6 +254,7 @@ class MainActivity : Activity() {
         typingCard.addView(prefSwitch("Show key hints (long-press to type)", "key_hints", true))
         typingCard.addView(prefSwitch("Number row on English keyboard", "number_row_en", true))
         typingCard.addView(prefSwitch("Number row on Thai keyboard", "number_row_th", false))
+        typingCard.addView(prefSwitch("Clipboard history (tap the clipboard icon)", "clipboard", true))
         content.addView(typingCard, sectionParams())
 
         val updateCard = card()

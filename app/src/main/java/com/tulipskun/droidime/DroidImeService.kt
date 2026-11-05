@@ -3,6 +3,8 @@ package com.tulipskun.droidime
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
@@ -41,7 +43,9 @@ class DroidImeService : InputMethodService() {
 
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
-    private enum class KeyStyle { NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION }
+    private enum class KeyStyle {
+        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, SECTION
+    }
 
     private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
 
@@ -50,7 +54,13 @@ class DroidImeService : InputMethodService() {
     private enum class KeyGlyph { SHIFT, SHIFT_ON, CAPS, DELETE, ENTER, GLOBE, NUMBER_PAD }
 
     // One tappable word suggestion: replace the last `replaceLen` characters with `text + append`.
-    private data class Suggestion(val text: String, val replaceLen: Int, val append: String)
+    // `score` is the ranking signal used to order the strip (higher is better).
+    private data class Suggestion(
+        val text: String,
+        val replaceLen: Int,
+        val append: String,
+        val score: Int = 0
+    )
 
     // Words sorted for binary-search prefix lookup, with a frequency per word.
     private class Dictionary(val words: Array<String>, val freqs: IntArray) {
@@ -172,6 +182,29 @@ class DroidImeService : InputMethodService() {
     // a single disposition check is enough; this stays on the main thread for simplicity.
     private val userWords = linkedMapOf<String, Int>()
 
+    // ---- Clipboard -----------------------------------------------------------------------------
+    //
+    // Gboard keeps the copies made while it is the keyboard and shows them in a clipboard panel.
+    // The system clipboard only ever holds the newest clip, so the panel is backed by our own
+    // list. A clip is only recorded when the keyboard itself put it there (a copy the user made
+    // with the select-all/copy tool) or when the system clipboard changed while this keyboard
+    // was showing — a copy made in another app is visible to the keyboard, but only while it is
+    // on screen, so that is the only moment it can be picked up.
+    private val clips = ArrayList<Clip>()
+    private var clipMenuId: String? = null
+    private var clipSelection: String? = null
+    private var clipEdit = false
+
+    private class Clip(val id: String, val text: String, val pinned: Boolean, val at: Long) {
+        fun copy(pinned: Boolean = this.pinned, at: Long = this.at) = Clip(id, text, pinned, at)
+    }
+
+    // A clip's text with the characters a reader should not have to scroll through collapsed.
+    private fun clipPreview(text: String): String =
+        text.replace(Regex("\\s+"), " ").trim().let { if (it.length > 80) it.take(80) + "…" else it }
+
+    private fun clipId(text: String): String = text.trim()
+
     private var palette = lightPalette
     private var darkTheme = false
     private var appliedDark: Boolean? = null
@@ -265,12 +298,122 @@ class DroidImeService : InputMethodService() {
         super.onCreate()
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
         loadUserWords()
+        loadClips()
+        val clipboard = clipboardManager()
+        if (clipboard != null) {
+            clipboard.addPrimaryClipChangedListener(clipListener)
+            // The keyboard may be started with a clip already on the clipboard; pick it up so the
+            // panel is not empty on the first open.
+            recordSystemClip(clipboard)
+        }
         Thread {
             dictEn = loadDictionary("words_en.txt")
             dictTh = loadDictionary("words_th.txt")
             settingsHandler.post { updateSuggestions() }
         }.start()
     }
+
+    override fun onDestroy() {
+        preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
+        stopDeleteRepeat()
+        clipboardManager()?.removePrimaryClipChangedListener(clipListener)
+        keyboardView = null
+        super.onDestroy()
+    }
+
+    private fun clipboardManager(): ClipboardManager? =
+        getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
+
+    // The keyboard is allowed to read the clipboard while it is the input method, so a copy made
+    // anywhere while it is showing arrives here. Listener callbacks come on the main thread.
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        val manager = clipboardManager() ?: return@OnPrimaryClipChangedListener
+        recordSystemClip(manager)
+    }
+
+    private fun recordSystemClip(manager: ClipboardManager) {
+        val clip = try {
+            manager.primaryClip
+        } catch (_: Exception) {
+            null
+        } ?: return
+        val text = clipText(clip) ?: return
+        addClip(text, pinned = false, system = true)
+    }
+
+    private fun clipText(clip: ClipData): String? {
+        if (clip.itemCount == 0) return null
+        for (i in 0 until clip.itemCount) {
+            val text = clip.getItemAt(i).coerceToText(this)?.toString()
+            if (!text.isNullOrEmpty()) return text
+        }
+        return null
+    }
+
+    // ---- Clipboard storage ---------------------------------------------------------------------
+
+    private fun addClip(text: String, pinned: Boolean, system: Boolean) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        val id = clipId(trimmed)
+        val existing = clips.indexOfFirst { it.id == id }
+        if (existing >= 0) {
+            val old = clips.removeAt(existing)
+            clips.add(0, old.copy(pinned = old.pinned || pinned, at = SystemClock.elapsedRealtime()))
+            saveClips()
+            return
+        }
+        clips.add(0, Clip(id, trimmed, pinned, SystemClock.elapsedRealtime()))
+        // Gboard keeps roughly the last handful of copies; anything older is dropped, pinned or not.
+        while (clips.size > CLIP_KEEP) {
+            val drop = clips.indexOfLast { !it.pinned }
+            if (drop < 0) break
+            clips.removeAt(drop)
+        }
+        saveClips()
+        // A copy that arrives while the panel is closed should not silently become a suggestion.
+        if (system) clipSelection = null
+    }
+
+    private fun saveClips() {
+        val sb = StringBuilder()
+        for (clip in clips) {
+            if (sb.length + clip.text.length > CLIP_STORE_LIMIT) break
+            sb.append(if (clip.pinned) "1\t" else "0\t")
+                .append(clip.text.replace("\n", "\\n")).append('\n')
+        }
+        preferences.edit().putString(CLIP_DICT, sb.toString()).apply()
+    }
+
+    private fun loadClips() {
+        clips.clear()
+        val raw = preferences.getString(CLIP_DICT, null) ?: return
+        for (line in raw.lines()) {
+            if (line.isEmpty()) continue
+            val pinned = line.startsWith("1\t")
+            val text = (if (pinned) line.substring(2) else line.substring(2)).replace("\\n", "\n")
+            if (text.trim().isEmpty()) continue
+            clips.add(Clip(clipId(text), text, pinned, 0L))
+        }
+    }
+
+    private fun removeClip(id: String) {
+        val index = clips.indexOfFirst { it.id == id }
+        if (index < 0) return
+        clips.removeAt(index)
+        saveClips()
+    }
+
+    private fun toggleClipPin(id: String) {
+        val index = clips.indexOfFirst { it.id == id }
+        if (index < 0) return
+        clips[index] = clips[index].copy(pinned = !clips[index].pinned)
+        saveClips()
+    }
+
+    // The panel shows pinned clips first, newest pinned above older ones, then recent copies.
+    private fun clipsForPanel(): List<Clip> =
+        clips.sortedWith(compareByDescending<Clip> { it.pinned }.thenByDescending { it.at })
 
     // Assets are "word<TAB>frequency" lines; sort by word so prefixes can be binary-searched.
     private fun loadDictionary(name: String): Dictionary? = try {
@@ -316,6 +459,9 @@ class DroidImeService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        // The panel belongs to one editing session: leaving the field closes it.
+        clipSelection = null
+        clipMenuId = null
         if (keyboardView == null) {
             shifted = false
             return
@@ -348,13 +494,6 @@ class DroidImeService : InputMethodService() {
         // followed by a space.
         learnTrailingWord()
         super.onFinishInputView(finishingInput)
-    }
-
-    override fun onDestroy() {
-        preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
-        stopDeleteRepeat()
-        keyboardView = null
-        super.onDestroy()
     }
 
     private fun fieldKindOf(info: EditorInfo?): FieldKind {
@@ -448,9 +587,12 @@ class DroidImeService : InputMethodService() {
 
     private fun isThai(c: Char) = c in '\u0E01'..'\u0E5B'
 
+    // ---- Suggestions ---------------------------------------------------------------------------
     // Suggestions follow the characters before the cursor, whichever keyboard language is shown.
+    // Pressing a key while the panel is open acts on the clip, so the strip is not involved.
     private fun computeSuggestions(): List<Suggestion> {
         if (!preferences.getBoolean("suggestions", true)) return emptyList()
+        if (clipOpen()) return emptyList()
         if (symbols || numberPad || fieldKind != FieldKind.TEXT) return emptyList()
         val type = currentInputEditorInfo?.inputType ?: return emptyList()
         if ((type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return emptyList()
@@ -509,8 +651,9 @@ class DroidImeService : InputMethodService() {
             }
         }
         if (scores.isEmpty()) return emptyList()
-        val found = scores.entries.sortedByDescending { it.value }
-            .take(if (typed.length >= 2) 2 else 3).map { it.key }
+        val take = if (typed.length >= 2) 2 else 3
+        val found = scores.entries.sortedByDescending { entry -> entry.value }
+            .take(take).map { entry -> entry.key }
         val allCaps = typed.length > 1 && typed.all { it.isUpperCase() }
         val capital = typed[0].isUpperCase()
         val out = ArrayList<Suggestion>()
@@ -535,6 +678,8 @@ class DroidImeService : InputMethodService() {
         var start = before.length
         while (start > 0 && isThai(before[start - 1]) && before.length - start < 12) start--
         val run = before.substring(start)
+        // Completions are ranked by frequency, with a small bonus for the word as typed and for
+        // words the user has already used, so the strip's order is stable as more is typed.
         val completions = ArrayList<Suggestion>()
         var typedLen = 0
         for (k in run.length downTo 1) {
@@ -544,15 +689,17 @@ class DroidImeService : InputMethodService() {
             if (dict != null) {
                 for (index in dict.complete(suffix, 3)) {
                     val word = dict.words[index]
-                    if (completions.none { it.text == word }) completions.add(Suggestion(word, k, ""))
+                    if (completions.none { s -> s.text == word }) {
+                        completions.add(Suggestion(word, k, "", dict.freqs[index]))
+                    }
                 }
             }
             // Learned vocabulary completes alongside the shipped words.
             if (completions.size < 3) {
-                for (word in userWords.keys) {
+                for ((word, count) in userWords) {
                     if (word.length > suffix.length && word.startsWith(suffix) &&
-                        completions.none { it.text == word }) {
-                        completions.add(Suggestion(word, k, ""))
+                        completions.none { s -> s.text == word }) {
+                        completions.add(Suggestion(word, k, "", count * 4))
                     }
                 }
             }
@@ -566,13 +713,13 @@ class DroidImeService : InputMethodService() {
             val stripped = run.filterNot { it in THAI_MARKS }
             val fixes = ArrayList<Suggestion>()
             dict?.strippedIndex?.get(stripped)?.let { idx ->
-                fixes.add(Suggestion(dict.words[idx], run.length, ""))
+                fixes.add(Suggestion(dict.words[idx], run.length, "", dict.freqs[idx]))
             }
             for ((word, _) in userWords) {
                 if (word == run) continue
                 val w = word.filterNot { it in THAI_MARKS }
                 if (w == stripped || oneEdit(w, stripped)) {
-                    if (fixes.none { it.text == word }) fixes.add(Suggestion(word, run.length, ""))
+                    if (fixes.none { s -> s.text == word }) fixes.add(Suggestion(word, run.length, ""))
                 }
             }
             completions.addAll(fixes.take(3))
@@ -582,7 +729,7 @@ class DroidImeService : InputMethodService() {
         if (typedLen == 0) return emptyList()
         val out = ArrayList<Suggestion>()
         out.add(Suggestion(run.substring(run.length - typedLen), typedLen, ""))
-        for (c in completions) {
+        for (c in completions.sortedByDescending { it.score }) {
             if (out.size == 3) break
             out.add(c)
         }
@@ -591,8 +738,14 @@ class DroidImeService : InputMethodService() {
 
     // ---- Glide typing -------------------------------------------------------------------------
 
+    private fun clipOpen(): Boolean = preferences.getBoolean("clipboard", true) && clipPanelVisible
+
+    // The panel replaces the suggestion strip and the letter rows, so the keys that are drawn
+    // while it is open are not glide letters.
+    private var clipPanelVisible = false
+
     private fun glideAllowed(): Boolean =
-        !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
+        !clipOpen() && !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
             ((if (language == Language.THAI) dictTh else dictEn) != null || userWords.isNotEmpty()) &&
             preferences.getBoolean("glide_typing", true)
 
@@ -725,6 +878,8 @@ class DroidImeService : InputMethodService() {
     private fun commitGlide(words: List<String>, thai: Boolean) {
         val connection = currentInputConnection ?: return
         if (words.isEmpty()) return
+        // A glide word is committed with the strip's capitalisation and spacing, so it can be
+        // taken back by deleting what was just typed.
         fun styled(word: String) = when {
             shiftLocked -> word.uppercase()
             shifted -> word.replaceFirstChar { it.uppercase() }
@@ -755,12 +910,12 @@ class DroidImeService : InputMethodService() {
 
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
-        glideCommitted = null
         connection.beginBatchEdit()
         connection.deleteSurroundingText(suggestion.replaceLen, 0)
         connection.commitText(suggestion.text + suggestion.append, 1)
         connection.endBatchEdit()
-        // Picking a suggestion confirms the word, so it joins the personal dictionary too.
+        // Picking a suggestion confirms the word, so it joins the personal dictionary too, and the
+        // strip keeps offering it until the text changes.
         learnWord(suggestion.text)
         lastSpaceTap = 0L
         afterTextChanged()
@@ -850,13 +1005,79 @@ class DroidImeService : InputMethodService() {
         afterTextChanged()
     }
 
-    private fun pasteClipboard() {
-        currentInputConnection?.performContextMenuAction(android.R.id.paste)
+    // ---- Clipboard panel -----------------------------------------------------------------------
+
+    private fun openClipboardPanel() {
+        clipSelection = null
+        clipMenuId = null
+        clipPanelVisible = true
+        renderKeyboard()
+    }
+
+    private fun pasteClip(id: String) {
+        val clip = clips.firstOrNull { it.id == id } ?: return
+        val connection = currentInputConnection ?: return
+        connection.commitText(clip.text, 1)
+        clipMenuId = null
+        clipSelection = null
         afterTextChanged()
+    }
+
+    // The paste tool and the panel both put the clip on the system clipboard, so a later long-press
+    // on the text field pastes it the ordinary way.
+    private fun putClipOnClipboard(text: String) {
+        try {
+            clipboardManager()?.setPrimaryClip(ClipData.newPlainText("DroidIME", text))
+        } catch (_: Exception) {
+            // Writing the clipboard is best effort; the panel still holds the clip.
+        }
+    }
+
+    private fun deleteClip(id: String) {
+        removeClip(id)
+        if (clipMenuId == id) clipMenuId = null
+        if (clipSelection == id) clipSelection = null
+        renderKeyboard()
+    }
+
+    private fun togglePin(id: String) {
+        toggleClipPin(id)
+        clipMenuId = null
+        renderKeyboard()
+    }
+
+    private fun showClipMenu(id: String) {
+        clipMenuId = if (clipMenuId == id) null else id
+        renderKeyboard()
+    }
+
+    // Edit mode is the "select many" state: tapping clips toggles them and the header button
+    // deletes the selection, the way Gboard's clipboard edit mode does.
+    private fun toggleClipSelection(id: String) {
+        clipSelection = if (clipSelection == id) null else id
+        renderKeyboard()
+    }
+
+    private fun toggleClipEdit() {
+        clipEdit = !clipEdit
+        clipSelection = null
+        clipMenuId = null
+        renderKeyboard()
     }
 
     private fun selectAllText() {
         currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
+    }
+
+    // Long-pressing the cursor tool copies the selection, which is how a clip reaches the
+    // clipboard panel without leaving the keyboard.
+    private fun copySelectionTool() {
+        val connection = currentInputConnection ?: return
+        connection.performContextMenuAction(android.R.id.selectAll)
+        val selected = connection.getSelectedText(0)
+        if (selected.isNullOrEmpty()) return
+        addClip(selected.toString(), pinned = false, system = false)
+        putClipOnClipboard(selected.toString())
     }
 
     @Suppress("DEPRECATION")
@@ -992,6 +1213,20 @@ class DroidImeService : InputMethodService() {
 
     private fun deleteOne(updateShift: Boolean = true) {
         val connection = currentInputConnection ?: return
+        // A word just produced by a glide (or picked from the strip) sits whole before the
+        // cursor. Taking it back in one press matches Gboard, where delete removes the word the
+        // suggestion strip just offered rather than its last character. This applies to the first
+        // press and to the repeat that follows it, so holding delete does not nibble the word.
+        val tail = glideCommitted
+        if (tail != null && connection.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
+            connection.deleteSurroundingText(tail.length, 0)
+            glideCommitted = null
+            glideAlternatives = emptyList()
+            if (updateShift) afterTextChanged()
+            return
+        }
+        glideCommitted = null
+        glideAlternatives = emptyList()
         val selection = connection.getSelectedText(0)
         if (!selection.isNullOrEmpty()) {
             connection.commitText("", 1)
@@ -1047,15 +1282,26 @@ class DroidImeService : InputMethodService() {
         val isDelete: Boolean = false,
         val glyph: KeyGlyph? = null,
         val pill: Boolean = false,
+        val clipId: String? = null,
         val rect: RectF = RectF(),
         // Gap-free hit area: tiles the whole keyboard so no tap lands on dead space.
         val touchRect: RectF = RectF()
     ) {
+        fun withAction(action: () -> Unit): Cell = Cell(
+            label, style, hint, action, longAction, icon, emojiFace, isDelete, glyph, pill, clipId
+        )
+
+        fun withLongAction(action: () -> Unit): Cell = Cell(
+            label, style, hint, this.action, action, icon, emojiFace, isDelete, glyph, pill, clipId
+        )
+
         val contentDescription: String = describe(label, style)
 
         companion object {
             fun describe(label: String, style: KeyStyle): String = when {
                 style == KeyStyle.SPACE -> "Space"
+                style == KeyStyle.HEADER -> label
+                style == KeyStyle.CLIP -> label.ifEmpty { "Empty clipboard slot" }
                 label == GLOBE -> "Switch language"
                 label == DELETE -> "Delete"
                 label == ENTER -> "Enter"
@@ -1166,6 +1412,7 @@ class DroidImeService : InputMethodService() {
 
         // Each row is a list of (weight, cell) slots; a null cell is an indent spacer.
         private fun buildRows(): List<List<Pair<Float, Cell?>>> {
+            if (clipOpen()) return buildClipRows()
             val numberRowEnglish = preferences.getBoolean("number_row_en", true)
             val numberRowThai = preferences.getBoolean("number_row_th", false)
             val rows = when {
@@ -1201,14 +1448,14 @@ class DroidImeService : InputMethodService() {
         // fixed positions; between them sit three suggestion slots while there are suggestions
         // (blank slots fill up to three) and the tool icons otherwise.
         private fun stripCells(): List<Cell> {
-            fun tool(icon: ToolIcon, name: String, action: () -> Unit) =
-                Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = action)
+            fun tool(icon: ToolIcon, name: String): Cell =
+                Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
             val middle: List<Cell> = if (suggestions.isEmpty()) {
                 listOf(
-                    tool(ToolIcon.UNDO, "Undo") { sendCtrl(KeyEvent.KEYCODE_Z) },
-                    tool(ToolIcon.TRANSLATE, "Switch language") { switchLanguage() },
-                    tool(ToolIcon.CLIPBOARD, "Paste") { pasteClipboard() },
-                    tool(ToolIcon.SETTINGS, "Keyboard settings") { openSettings() }
+                    tool(ToolIcon.UNDO, "Undo").withAction { sendCtrl(KeyEvent.KEYCODE_Z) },
+                    tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
+                    tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() },
+                    tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() }
                 )
             } else {
                 List(3) { i ->
@@ -1220,8 +1467,80 @@ class DroidImeService : InputMethodService() {
                     }
                 }
             }
-            return listOf(tool(ToolIcon.GRID, "Choose keyboard") { showKeyboardPicker() }) + middle +
-                tool(ToolIcon.SELECT, "Select all") { selectAllText() }
+            // The cursor tool selects all on a tap and copies the selection on a long-press, which
+            // is how a clip reaches the clipboard panel from the keyboard alone.
+            val cursor = tool(ToolIcon.SELECT, "Select all")
+                .withAction { selectAllText() }
+                .withLongAction { copySelectionTool() }
+            val grid = tool(ToolIcon.GRID, "Choose keyboard")
+                .withAction { showKeyboardPicker() }
+            return listOf(grid) + middle + cursor
+        }
+
+        // The clipboard panel: a header (title, edit, close), then one row per clip. Pinned clips
+        // come first with a pin marker, like Gboard's two sections. Rows are full-width and their
+        // height is the panel height divided among them, so the panel always fills the keyboard.
+        private fun buildClipRows(): List<List<Pair<Float, Cell?>>> {
+            val rows = mutableListOf<List<Pair<Float, Cell?>>>()
+            val panel = clipsForPanel()
+            val pinned = panel.filter { clip -> clip.pinned }
+            val recent = panel.filter { clip -> !clip.pinned }
+            rows.add(listOf(1f to headerCell()))
+            if (panel.isEmpty()) {
+                rows.add(listOf(1f to emptyCell()))
+                return rows
+            }
+            if (pinned.isNotEmpty()) {
+                rows.add(listOf(1f to sectionCell("Pinned")))
+                pinned.forEach { rows.add(listOf(1f to clipCell(it.id))) }
+            }
+            if (recent.isNotEmpty()) {
+                rows.add(listOf(1f to sectionCell("Recent")))
+                recent.forEach { rows.add(listOf(1f to clipCell(it.id))) }
+            }
+            return rows
+        }
+
+        private fun headerCell(): Cell {
+            val label = if (clipEdit) "Done" else "Edit"
+            return Cell(label, KeyStyle.HEADER, null, action = { toggleClipEdit() })
+        }
+
+        private fun sectionCell(name: String): Cell =
+            Cell(name, KeyStyle.SECTION, null, action = {}, longAction = {})
+
+        private fun emptyCell(): Cell =
+            Cell("No copies yet", KeyStyle.CLIP, null, action = {})
+
+        // A clip row. The long-press menu (the way Gboard opens it) is drawn inside the row, and
+        // the pin state is shown with a marker at the left edge.
+        private fun clipCell(id: String): Cell {
+            val clip = clips.firstOrNull { found -> found.id == id } ?: return emptyCell()
+            val menu = clipMenuId == id
+            val selected = clipSelection == id
+            // Only the actions that apply to this clip are offered: an unpinned clip can be
+            // pinned, a pinned one unpinned, and either can be deleted.
+            val menuLabel = if (clip.pinned) "Unpin\nDelete" else "Pin\nDelete"
+            val label = when {
+                menu -> menuLabel
+                selected -> "✓ ${clipPreview(clip.text)}"
+                else -> clipPreview(clip.text)
+            }
+            return Cell(
+                label, KeyStyle.CLIP, null,
+                clipId = id,
+                action = {
+                    when {
+                        menu -> clipMenuId = null
+                        clipEdit -> toggleClipSelection(id)
+                        selected -> toggleClipSelection(id)
+                        else -> pasteClip(id)
+                    }
+                },
+                longAction = {
+                    if (menu) clipMenuId = null else showClipMenu(id)
+                }
+            )
         }
 
         // Positions measured from Gboard (1080px wide): button centres at 6.6% and 93.2%, the three
@@ -1400,6 +1719,10 @@ class DroidImeService : InputMethodService() {
                 cells = flat
                 return
             }
+            if (clipOpen()) {
+                layoutClipRows(rows, flat)
+                return
+            }
             val padX = dpf(6.7f)
             val padTop = dpf(STRIP_TOP_DP)
             val padBottom = dpf(8f) + navigationInset
@@ -1448,6 +1771,33 @@ class DroidImeService : InputMethodService() {
             cells = flat
         }
 
+        // The panel fills the whole keyboard: a header row at the top and the clip rows sharing
+        // what is left, so a long list still fits and every row stays tappable.
+        private fun layoutClipRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
+            val padBottom = dpf(8f) + navigationInset
+            val availH = (height - dpf(CLIP_PAD_TOP_DP) - padBottom).coerceAtLeast(1f)
+            val headerH = dpf(CLIP_HEADER_DP)
+            val gap = dpf(4f)
+            val bodyRows = rows.size - 1
+            val rowH = ((availH - headerH - gap * (rows.size - 1)) / bodyRows).coerceAtLeast(dpf(28f))
+            var top = dpf(CLIP_PAD_TOP_DP)
+            rows.forEachIndexed { index, row ->
+                val h = if (index == 0) headerH else rowH
+                val bottom = top + h
+                row.forEach { (_, cell) ->
+                    if (cell != null) {
+                        cell.rect.set(dpf(8f), top, width - dpf(8f), bottom)
+                        val bandTop = if (index == 0) 0f else top - gap / 2f
+                        val bandBottom = if (index == rows.lastIndex) height.toFloat() else bottom + gap / 2f
+                        cell.touchRect.set(0f, bandTop, width.toFloat(), bandBottom)
+                        flat.add(cell)
+                    }
+                }
+                top = bottom + gap
+            }
+            cells = flat
+        }
+
         private fun drawCell(canvas: Canvas, cell: Cell) {
             val colors = palette
             if (cell.style == KeyStyle.TOOLBAR) {
@@ -1458,6 +1808,12 @@ class DroidImeService : InputMethodService() {
                 drawSuggestion(canvas, cell, colors)
                 return
             }
+            if (cell.style == KeyStyle.CLIP || cell.style == KeyStyle.HEADER ||
+                cell.style == KeyStyle.SECTION
+            ) {
+                drawClipCell(canvas, cell, colors)
+                return
+            }
             shape.setColor(
                 if (cell === pressed) colors.active else when (cell.style) {
                     KeyStyle.NORMAL -> colors.key
@@ -1465,7 +1821,8 @@ class DroidImeService : InputMethodService() {
                     KeyStyle.ACTIVE -> colors.active
                     KeyStyle.SPACE -> colors.key
                     KeyStyle.ENTER -> colors.enter
-                    KeyStyle.TOOLBAR, KeyStyle.SUGGESTION -> colors.background
+                    KeyStyle.TOOLBAR, KeyStyle.SUGGESTION, KeyStyle.CLIP, KeyStyle.HEADER,
+                    KeyStyle.SECTION -> colors.background
                 }
             )
             shape.setBounds(
@@ -1636,6 +1993,85 @@ class DroidImeService : InputMethodService() {
             canvas.drawText(text, cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
         }
 
+        // Clipboard panel rows. A clip row is a rounded card with the text left-aligned and, when
+        // pinned, a pin marker; the long-press menu replaces the row's text with its actions.
+        private fun drawClipCell(canvas: Canvas, cell: Cell, colors: Palette) {
+            val ink = colors.text
+            if (cell.style == KeyStyle.SECTION) {
+                // A small muted label above a group of clips; it is not itself tappable-looking.
+                textPaint.color = colors.hint
+                textPaint.typeface = Typeface.DEFAULT
+                textPaint.textSize = dpf(12f)
+                textPaint.textAlign = Paint.Align.LEFT
+                val m = textPaint.fontMetrics
+                canvas.drawText(
+                    cell.label, cell.rect.left + dpf(14f),
+                    cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint
+                )
+                textPaint.textAlign = Paint.Align.CENTER
+                return
+            }
+            if (cell.style == KeyStyle.HEADER) {
+                // Header: title on the left, the action (edit/clear) on the right.
+                textPaint.color = ink
+                textPaint.typeface = mediumFace
+                textPaint.textSize = dpf(16f)
+                val m = textPaint.fontMetrics
+                val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
+                textPaint.textAlign = Paint.Align.LEFT
+                canvas.drawText("Clipboard", cell.rect.left + dpf(14f), cy, textPaint)
+                textPaint.textAlign = Paint.Align.RIGHT
+                canvas.drawText(cell.label, cell.rect.right - dpf(14f), cy, textPaint)
+                textPaint.textAlign = Paint.Align.CENTER
+                textPaint.typeface = Typeface.DEFAULT
+                return
+            }
+            val selected = clipSelection == cell.clipId
+            val menu = clipMenuId == cell.clipId
+            shape.setColor(if (selected) colors.active else colors.key)
+            shape.setBounds(
+                (cell.rect.left + dpf(6f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
+                (cell.rect.right - dpf(6f)).toInt(), (cell.rect.bottom - dpf(2f)).toInt()
+            )
+            shape.cornerRadius = cornerRadius
+            shape.draw(canvas)
+            val clip = clips.firstOrNull { it.id == cell.clipId }
+            if (clip != null && clip.pinned) {
+                iconFill.color = colors.hint
+                val px = cell.rect.left + dpf(16f)
+                val py = cell.rect.centerY()
+                canvas.drawCircle(px, py - dpf(2f), dpf(2.2f), iconFill)
+                canvas.drawLine(px, py, px, py + dpf(4f), iconFill)
+            }
+            textPaint.color = if (selected) colors.enterText else ink
+            textPaint.typeface = Typeface.DEFAULT
+            if (menu) {
+                val lines = cell.label.split('\n')
+                textPaint.textSize = dpf(15f)
+                val m = textPaint.fontMetrics
+                val lineH = m.descent - m.ascent
+                val top = cell.rect.centerY() - lineH * (lines.size - 1) / 2f - m.ascent
+                textPaint.textAlign = Paint.Align.CENTER
+                lines.forEachIndexed { i, line ->
+                    canvas.drawText(line, cell.rect.centerX(), top + lineH * i, textPaint)
+                }
+                return
+            }
+            val text = cell.label
+            textPaint.textSize = dpf(15f)
+            val maxW = cell.rect.width() - dpf(40f)
+            var shown = text
+            while (shown.length > 1 && textPaint.measureText(shown) > maxW) shown = shown.dropLast(1)
+            if (shown.length < text.length) shown = shown.dropLast(1) + "…"
+            val m = textPaint.fontMetrics
+            textPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(
+                shown, cell.rect.left + dpf(28f),
+                cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint
+            )
+            textPaint.textAlign = Paint.Align.CENTER
+        }
+
         private fun drawEmojiKey(canvas: Canvas, cell: Cell, colors: Palette) {
             val cx = cell.rect.centerX()
             // Gboard's face is 28px (10dp) across, centred 13dp below the key top.
@@ -1739,6 +2175,23 @@ class DroidImeService : InputMethodService() {
             }
         }
 
+        // A clip row's long-press menu is drawn inside the row, so the row is split into the menu
+        // entries top to bottom; the tap is routed to the entry it lands on.
+        private fun clipMenuAction(cell: Cell, y: Float): (() -> Unit)? {
+            if (cell.clipId == null || clipMenuId != cell.clipId) return null
+            val id = cell.clipId
+            val lines = cell.label.split('\n')
+            if (lines.size < 2) return null
+            val step = cell.rect.height() / lines.size
+            val index = ((y - cell.rect.top) / step).toInt().coerceIn(0, lines.size - 1)
+            return when (lines[index]) {
+                "Pin", "Unpin" -> ({ togglePin(id) })
+                "Delete" -> ({ deleteClip(id) })
+                "Paste" -> ({ pasteClip(id) })
+                else -> null
+            }
+        }
+
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1751,6 +2204,19 @@ class DroidImeService : InputMethodService() {
                     glideLength = 0f
                     glideX.clear()
                     glideY.clear()
+                    if (cell != null && clipOpen()) {
+                        keyFeedback(this)
+                        if (cell.style == KeyStyle.SECTION) return true
+                        // The panel has no glide and no delete repeat; every row is a plain tap.
+                        val menuAction = clipMenuAction(cell, event.y)
+                        val runnable = Runnable {
+                            longPressFired = true
+                            if (menuAction != null) menuAction() else cell.longAction?.invoke()
+                        }
+                        pendingLongPress = runnable
+                        pressHandler.postDelayed(runnable, 400L)
+                        return true
+                    }
                     if (cell != null && glideAllowed() && cell.style == KeyStyle.NORMAL &&
                         cell.label.length == 1 && isGlideLetter(cell.label[0])) {
                         glideStartCell = cell
@@ -1775,6 +2241,15 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (clipOpen()) {
+                        val cell = cellAt(event.x, event.y)
+                        if (cell !== pressed) {
+                            pressed = cell
+                            cancelPendingLongPress()
+                            invalidate()
+                        }
+                        return true
+                    }
                     if (glideStartCell != null) {
                         for (h in 0 until event.historySize) addGlidePoint(event.getHistoricalX(h), event.getHistoricalY(h))
                         addGlidePoint(event.x, event.y)
@@ -1798,6 +2273,19 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
+                    if (clipOpen()) {
+                        val cell = pressed
+                        pressed = null
+                        invalidate()
+                        if (cell != null && cell.style != KeyStyle.SECTION && !longPressFired &&
+                            cellAt(event.x, event.y) === cell
+                        ) {
+                            val menuAction = clipMenuAction(cell, event.y)
+                            if (menuAction != null) menuAction() else cell.action()
+                        }
+                        longPressFired = false
+                        return true
+                    }
                     if (glideActive) {
                         addGlidePoint(event.x, event.y)
                         val xs = glideX.toFloatArray()
@@ -1927,6 +2415,19 @@ class DroidImeService : InputMethodService() {
     }
 
     private inner class KeyboardAccessibilityProvider : AccessibilityNodeProvider() {
+        // Clipboard rows announce their pin state, since the marker alone is easy to miss.
+        private fun clipDescription(cell: Cell): String {
+            if (cell.style == KeyStyle.SECTION) return cell.label
+            if (cell.style != KeyStyle.CLIP || cell.clipId == null) return cell.contentDescription
+            val clip = clips.firstOrNull { found -> found.id == cell.clipId }
+            val state = when {
+                clipMenuId == cell.clipId -> "options"
+                clip?.pinned == true -> "pinned"
+                else -> "recent"
+            }
+            return "${cell.label}, $state"
+        }
+
         override fun createAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
             val view = keyboardView ?: return null
             if (virtualViewId == AccessibilityNodeProvider.HOST_VIEW_ID) {
@@ -1939,7 +2440,7 @@ class DroidImeService : InputMethodService() {
             val cell = cells[virtualViewId]
             val info = AccessibilityNodeInfo.obtain(view, virtualViewId)
             info.className = "android.widget.Button"
-            info.contentDescription = cell.contentDescription
+            info.contentDescription = clipDescription(cell)
             info.text = cell.label
             info.isClickable = true
             info.setBoundsInParent(
@@ -1993,10 +2494,16 @@ class DroidImeService : InputMethodService() {
         private const val THAI_NON_LEADING ="ะาำัิีึืุู็่้๊๋์ํๅๆฯฺ"
 
         private val SETTINGS_KEYS = setOf(
-            "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints", "suggestions"
+            "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints", "suggestions",
+            "clipboard"
         )
 
         private const val USER_DICT = "user_dict"
+        private const val CLIP_DICT = "clipboard_items"
+        private const val CLIP_KEEP = 12
+        private const val CLIP_STORE_LIMIT = 20_000
+        private const val CLIP_HEADER_DP = 44f
+        private const val CLIP_PAD_TOP_DP = 10f
 
         private const val DELETE_INITIAL_DELAY_MS = 400L
         private const val DELETE_START_MS = 60
