@@ -243,6 +243,7 @@ class DroidImeService : InputMethodService() {
     private var lastTypedAt = 0L
     private val correctionCounts = linkedMapOf<String, Int>()
     private var glideCorrectionCount = 0
+    private var lastGlidePathBins: List<String> = emptyList()
 
     private val thaiRows = listOf(
         listOf("ๅ", "/", "_", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
@@ -935,6 +936,7 @@ class DroidImeService : InputMethodService() {
         val connection = currentInputConnection ?: return
         if (glideCommitted != null) {
             preferences.edit().putInt(GLIDE_ALTERNATIVES, preferences.getInt(GLIDE_ALTERNATIVES, 0) + 1).apply()
+            recordGlidePositions()
         }
         connection.beginBatchEdit()
         connection.deleteSurroundingText(suggestion.replaceLen, 0)
@@ -1237,6 +1239,20 @@ class DroidImeService : InputMethodService() {
         if (fieldKind != FieldKind.TEXT) return
         glideCorrectionCount++
         preferences.edit().putInt(GLIDE_CORRECTIONS, glideCorrectionCount).apply()
+        recordGlidePositions()
+    }
+
+    private fun recordGlidePositions() {
+        if (lastGlidePathBins.isEmpty()) return
+        val counts = linkedMapOf<String, Int>()
+        preferences.getString(GLIDE_POSITION_STATS, "").orEmpty().lineSequence().forEach { line ->
+            val split = line.lastIndexOf('\\t')
+            if (split > 0) counts[line.substring(0, split)] = line.substring(split + 1).toIntOrNull() ?: 0
+        }
+        lastGlidePathBins.forEach { bin -> counts[bin] = (counts[bin] ?: 0) + 1 }
+        preferences.edit().putString(GLIDE_POSITION_STATS,
+            counts.entries.joinToString("\\n") { "${it.key}\\t${it.value}" }).apply()
+        lastGlidePathBins = emptyList()
     }
 
     // Two quick spaces after a word become ". " (English only).
@@ -1413,6 +1429,7 @@ class DroidImeService : InputMethodService() {
         private var glideStartCell: Cell? = null
         private var glideActive = false
         private var glideLength = 0f
+        private val glideBins = linkedSetOf<String>()
         private val glideX = ArrayList<Float>()
         private val glideY = ArrayList<Float>()
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -2344,6 +2361,7 @@ class DroidImeService : InputMethodService() {
                     glideActive = false
                     glideStartCell = null
                     glideLength = 0f
+                    glideBins.clear()
                     glideX.clear()
                     glideY.clear()
                     if (cell != null && panelOpen()) {
@@ -2447,6 +2465,7 @@ class DroidImeService : InputMethodService() {
                         addGlidePoint(event.x, event.y)
                         val xs = glideX.toFloatArray()
                         val ys = glideY.toFloatArray()
+                        lastGlidePathBins = glideBins.toList()
                         glideActive = false
                         glideStartCell = null
                         glideX.clear()
@@ -2483,6 +2502,7 @@ class DroidImeService : InputMethodService() {
                     spaceDragMoved = false
                     glideX.clear()
                     glideY.clear()
+                    glideBins.clear()
                     cancelPendingLongPress()
                     stopDeleteRepeat()
                     pressed = null
@@ -2500,6 +2520,11 @@ class DroidImeService : InputMethodService() {
             }
             glideX.add(x)
             glideY.add(y)
+            if (width > 0 && height > 0) {
+                val column = (x / width * 10f).toInt().coerceIn(0, 9)
+                val row = (y / height * 6f).toInt().coerceIn(0, 5)
+                glideBins.add("$row:$column")
+            }
         }
 
         private fun isGlideLetter(ch: Char): Boolean =
@@ -2663,6 +2688,7 @@ class DroidImeService : InputMethodService() {
         private const val CORRECTION_STATS = "correction_stats"
         private const val GLIDE_CORRECTIONS = "glide_corrections"
         private const val GLIDE_ALTERNATIVES = "glide_alternatives"
+        private const val GLIDE_POSITION_STATS = "glide_position_stats"
         private const val CLIP_DICT = "clipboard_items"
         private const val CLIP_KEEP = 12
         private const val CLIP_STORE_LIMIT = 20_000
