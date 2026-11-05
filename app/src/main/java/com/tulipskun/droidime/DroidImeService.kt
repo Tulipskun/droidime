@@ -1240,6 +1240,8 @@ class DroidImeService : InputMethodService() {
             .put("px", x.toDouble())
             .put("py", y.toDouble())
             .put("key", cell?.label ?: "")
+            .put("style", cell?.style?.name ?: "UNKNOWN")
+            .put("delete", cell?.isDelete ?: false)
             .put("key_x", cell?.rect?.centerX()?.div(viewWidth.toFloat()) ?: (x / viewWidth))
             .put("key_y", cell?.rect?.centerY()?.div(viewHeight.toFloat()) ?: (y / viewHeight))
             .put("corrected", false)
@@ -1251,8 +1253,8 @@ class DroidImeService : InputMethodService() {
         val events = touchHistory()
         val glideIndex = events.indexOfLast { it.optString("type") == "glide_point" }
         val keyIndex = events.indexOfLast {
-            it.optString("type") == "key_touch" && it.optString("key") !in setOf("space", "delete", "enter") &&
-                !it.optBoolean("corrected")
+            it.optString("type") == "key_touch" && !it.optBoolean("delete") &&
+                it.optString("style") !in setOf("SPACE", "ENTER") && !it.optBoolean("corrected")
         }
         if (glideIndex > keyIndex && glideIndex >= 0) {
             val gestureTime = events[glideIndex].optLong("time")
