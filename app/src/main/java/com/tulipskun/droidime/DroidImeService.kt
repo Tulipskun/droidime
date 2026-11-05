@@ -1207,10 +1207,6 @@ class DroidImeService : InputMethodService() {
 
     private fun typeText(value: String) {
         currentInputConnection?.commitText(value, 1)
-        if (fieldKind == FieldKind.TEXT && value.isNotBlank() && value.length <= 4) {
-            lastTypedToken = value
-            lastTypedAt = SystemClock.elapsedRealtime()
-        }
         afterTextChanged()
     }
 
