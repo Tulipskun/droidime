@@ -70,7 +70,7 @@ class MainActivity : Activity() {
     }
     private val bgColor get() = if (dark) Color.rgb(20, 21, 24) else Color.rgb(244, 246, 250)
     private val cardColor get() = if (dark) Color.rgb(36, 38, 43) else Color.WHITE
-    private val titleColor get() = if (dark) Color.rgb(238, 240, 245) else Color.rgb(27, 35, 52)
+    private val headingColor get() = if (dark) Color.rgb(238, 240, 245) else Color.rgb(27, 35, 52)
     private val sectionColor get() = if (dark) Color.rgb(232, 234, 240) else Color.rgb(31, 40, 58)
     private val mutedColor get() = if (dark) Color.rgb(160, 167, 180) else Color.rgb(105, 113, 128)
     private val bodyColor get() = if (dark) Color.rgb(185, 191, 203) else Color.rgb(82, 91, 108)
@@ -97,7 +97,7 @@ class MainActivity : Activity() {
         content.addView(TextView(this).apply {
             text = "DroidIME"
             textSize = 30f
-            setTextColor(titleColor)
+            setTextColor(headingColor)
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         })
         content.addView(TextView(this).apply {
