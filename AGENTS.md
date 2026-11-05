@@ -4,6 +4,7 @@
 
 - Always push. Never leave committed work only in the local repository.
 - Do not create feature/sub-branches. Commit and push directly to `main`.
+- Bump `versionCode` (and `versionName`) in `app/build.gradle.kts` with every push that changes the app: the in-app update check compares the release's versionCode with the installed one, so an unchanged code shows "up to date".
 - Pushing to `main` triggers the `Android Release` workflow, which builds the signed APK and replaces the rolling `latest` release.
 
 ## Finding bugs
