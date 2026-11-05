@@ -932,6 +932,7 @@ class DroidImeService : InputMethodService() {
         val connection = currentInputConnection ?: return
         if (glideCommitted != null) {
             preferences.edit().putInt(GLIDE_ALTERNATIVES, preferences.getInt(GLIDE_ALTERNATIVES, 0) + 1).apply()
+            markLastGlideRejected()
         }
         connection.beginBatchEdit()
         connection.deleteSurroundingText(suggestion.replaceLen, 0)
@@ -1278,6 +1279,16 @@ class DroidImeService : InputMethodService() {
                 .put("y", point.second / viewHeight)
                 .put("rejected", rejected))
         }
+    }
+
+    private fun markLastGlideRejected() {
+        val events = touchHistory()
+        val lastIndex = events.indexOfLast { it.optString("type") == "glide_point" }
+        if (lastIndex < 0) return
+        val gestureTime = events[lastIndex].optLong("time")
+        events.filter { it.optString("type") == "glide_point" && it.optLong("time") == gestureTime }
+            .forEach { it.put("rejected", true) }
+        preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
     }
 
     // Two quick spaces after a word become ". " (English only).
