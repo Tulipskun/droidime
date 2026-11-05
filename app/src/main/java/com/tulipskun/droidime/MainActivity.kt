@@ -238,6 +238,28 @@ class MainActivity : Activity() {
         typingCard.addView(prefSwitch("Clipboard history (tap the clipboard icon)", "clipboard", true))
         content.addView(typingCard, sectionParams())
 
+        val learningCard = card()
+        learningCard.addView(sectionTitle("Typing improvement data"))
+        val correctionStats = preferences.getString("correction_stats", "").orEmpty()
+        val correctionSummary = correctionStats.lines().mapNotNull { line ->
+            val split = line.lastIndexOf('\t')
+            if (split > 0) line.substring(0, split) + ": " + line.substring(split + 1) else null
+        }.take(8).joinToString(" · ").ifEmpty { "No correction data yet" }
+        learningCard.addView(TextView(this).apply {
+            text = "Frequently corrected keys: " + correctionSummary +
+                "\nGlide words deleted: " + preferences.getInt("glide_corrections", 0) +
+                "\nAlternative glide suggestions chosen: " + preferences.getInt("glide_alternatives", 0) +
+                "\n\nOnly local correction counts are stored. Full typed text and passwords are not recorded."
+            textSize = 13f
+            setTextColor(bodyColor)
+            setPadding(0, dp(2), 0, dp(10))
+        })
+        learningCard.addView(actionButton("Reset typing data") {
+            preferences.edit().remove("correction_stats").remove("glide_corrections").remove("glide_alternatives").apply()
+            recreate()
+        })
+        content.addView(learningCard, sectionParams())
+
         val updateCard = card()
         updateCard.addView(sectionTitle("App update"))
         status = TextView(this).apply {
