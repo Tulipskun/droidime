@@ -1249,11 +1249,16 @@ class DroidImeService : InputMethodService() {
     private fun markLastTouchCorrected() {
         if (fieldKind != FieldKind.TEXT || SystemClock.elapsedRealtime() - lastTouchEventAt > 5000L) return
         val events = touchHistory()
-        val index = events.indexOfLast { it.optString("type") == "key_touch" && !it.optBoolean("corrected") }
-        if (index >= 0) {
-            events[index].put("corrected", true)
-            preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
+        val lastGesture = events.lastOrNull()
+        if (lastGesture?.optString("type") == "glide_point") {
+            val gestureTime = lastGesture.optLong("time")
+            events.filter { it.optString("type") == "glide_point" && it.optLong("time") == gestureTime }
+                .forEach { it.put("rejected", true) }
+        } else {
+            val index = events.indexOfLast { it.optString("type") == "key_touch" && !it.optBoolean("corrected") }
+            if (index >= 0) events[index].put("corrected", true)
         }
+        preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
     }
 
     private fun recordGlidePath(points: List<Pair<Float, Float>>, viewWidth: Int, viewHeight: Int, rejected: Boolean) {
@@ -2422,6 +2427,9 @@ class DroidImeService : InputMethodService() {
                             if (target != spaceDragLastCursor && currentInputConnection?.setSelection(target, target) == true) {
                                 spaceDragLastCursor = target
                                 spaceDragMoved = true
+                                saveTouchEvent(JSONObject().put("type", "cursor_drag").put("time", System.currentTimeMillis())
+                                    .put("x", event.x / width.coerceAtLeast(1)).put("y", event.y / height.coerceAtLeast(1))
+                                    .put("cursor", target))
                             }
                         }
                         return true
