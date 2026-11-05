@@ -145,8 +145,6 @@ class DroidImeService : InputMethodService() {
     )
 
     private var suggestions: List<Suggestion> = emptyList()
-    // Gboard's left strip button swaps the three suggestion slots for the tool icons.
-    private var toolbarOpen = false
     @Volatile private var dictEn: Dictionary? = null
     @Volatile private var dictTh: Dictionary? = null
 
@@ -303,7 +301,6 @@ class DroidImeService : InputMethodService() {
             language = previousLanguage
         }
         if (!restarting) {
-            toolbarOpen = false
             fieldKind = fieldKindOf(info)
             symbols = false
             symbolPage = 0
@@ -416,15 +413,9 @@ class DroidImeService : InputMethodService() {
     private fun updateSuggestions() {
         val next = computeSuggestions()
         if (next != suggestions) {
-            if (next.isNotEmpty()) toolbarOpen = false
             suggestions = next
             keyboardView?.rebuild()
         }
-    }
-
-    private fun toggleToolbar() {
-        toolbarOpen = !toolbarOpen
-        keyboardView?.rebuild()
     }
 
     private fun isThai(c: Char) = c in '\u0E01'..'\u0E5B'
@@ -643,6 +634,16 @@ class DroidImeService : InputMethodService() {
     // Two quick spaces after a word become ". " (English only).
     private fun typeSpace() {
         val connection = currentInputConnection ?: return
+        if (symbols) {
+            // Like Gboard, a space typed on a symbol page drops back to the letters.
+            symbols = false
+            symbolPage = 0
+            lastSpaceTap = 0L
+            connection.commitText(" ", 1)
+            shifted = computeAutoShift()
+            renderKeyboard()
+            return
+        }
         val now = SystemClock.uptimeMillis()
         if (language == Language.ENGLISH &&
             preferences.getBoolean("double_space_period", true) &&
@@ -850,12 +851,12 @@ class DroidImeService : InputMethodService() {
         }
 
         // Top strip, as in Gboard: the left (grid) and right (cursor) buttons are always there at
-        // fixed positions; between them sit three suggestion slots (blank when there is nothing
-        // to suggest) or, once the grid button is tapped, the tool icons.
+        // fixed positions; between them sit three suggestion slots while there are suggestions
+        // (blank slots fill up to three) and the tool icons otherwise.
         private fun stripCells(): List<Cell> {
             fun tool(icon: ToolIcon, name: String, action: () -> Unit) =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = action)
-            val middle: List<Cell> = if (toolbarOpen) {
+            val middle: List<Cell> = if (suggestions.isEmpty()) {
                 listOf(
                     tool(ToolIcon.UNDO, "Undo") { sendCtrl(KeyEvent.KEYCODE_Z) },
                     tool(ToolIcon.TRANSLATE, "Switch language") { switchLanguage() },
@@ -872,7 +873,7 @@ class DroidImeService : InputMethodService() {
                     }
                 }
             }
-            return listOf(tool(ToolIcon.GRID, "Tools") { toggleToolbar() }) + middle +
+            return listOf(tool(ToolIcon.GRID, "Choose keyboard") { showKeyboardPicker() }) + middle +
                 tool(ToolIcon.SELECT, "Select all") { selectAllText() }
         }
 
