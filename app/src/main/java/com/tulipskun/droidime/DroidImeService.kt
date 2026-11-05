@@ -64,6 +64,33 @@ class DroidImeService : InputMethodService() {
             return lo
         }
 
+        fun indexOf(word: String): Int {
+            val i = lowerBound(word)
+            return if (i < words.size && words[i] == word) i else -1
+        }
+
+        // Dictionary words one edit away from `word` (a letter dropped, swapped, replaced or added),
+        // which is how "teh" offers "the".
+        fun corrections(word: String): List<Int> {
+            val found = LinkedHashSet<Int>()
+            fun probe(candidate: String) {
+                if (candidate == word) return
+                val i = indexOf(candidate)
+                if (i >= 0) found.add(i)
+            }
+            for (i in word.indices) probe(word.substring(0, i) + word.substring(i + 1))
+            for (i in 0 until word.length - 1) {
+                probe(word.substring(0, i) + word[i + 1] + word[i] + word.substring(i + 2))
+            }
+            for (i in word.indices) {
+                for (c in 'a'..'z') probe(word.substring(0, i) + c + word.substring(i + 1))
+            }
+            for (i in 0..word.length) {
+                for (c in 'a'..'z') probe(word.substring(0, i) + c + word.substring(i))
+            }
+            return found.toList()
+        }
+
         // Indices of the `limit` most frequent words that start with `prefix` and are longer.
         fun complete(prefix: String, limit: Int): List<Int> {
             val best = ArrayList<Int>()
@@ -413,8 +440,23 @@ class DroidImeService : InputMethodService() {
         while (start > 0 && (before[start - 1] in 'a'..'z' || before[start - 1] in 'A'..'Z' || before[start - 1] == '\'')) start--
         val typed = before.substring(start)
         if (typed.isEmpty() || typed.length > 20) return emptyList()
-        val found = dict.complete(typed.lowercase(), if (typed.length >= 2) 2 else 3)
-        if (found.isEmpty()) return emptyList()
+        val lower = typed.lowercase()
+        // Completions and one-edit corrections compete on frequency, like Gboard's strip where
+        // "test" offers both "rest" and "tested" next to the word as typed.
+        val scores = LinkedHashMap<Int, Int>()
+        for (index in dict.complete(lower, 6)) {
+            scores[index] = dict.freqs[index] - (dict.words[index].length - lower.length)
+        }
+        if (lower.length >= 3) {
+            for (index in dict.corrections(lower)) {
+                val score = dict.freqs[index] - EDIT_PENALTY
+                val old = scores[index]
+                if (old == null || score > old) scores[index] = score
+            }
+        }
+        if (scores.isEmpty()) return emptyList()
+        val found = scores.entries.sortedByDescending { it.value }
+            .take(if (typed.length >= 2) 2 else 3).map { it.key }
         val allCaps = typed.length > 1 && typed.all { it.isUpperCase() }
         val capital = typed[0].isUpperCase()
         val out = ArrayList<Suggestion>()
@@ -440,6 +482,15 @@ class DroidImeService : InputMethodService() {
         while (start > 0 && isThai(before[start - 1]) && before.length - start < 12) start--
         val run = before.substring(start)
         val out = ArrayList<Suggestion>()
+        // The word being typed comes first, as in Gboard: the longest ending that is a word.
+        for (k in run.length downTo 2) {
+            val suffix = run.substring(run.length - k)
+            if (suffix[0] in THAI_NON_LEADING) continue
+            if (dict.indexOf(suffix) >= 0) {
+                out.add(Suggestion(suffix, k, ""))
+                break
+            }
+        }
         for (k in run.length downTo 2) {
             val suffix = run.substring(run.length - k)
             if (suffix[0] in THAI_NON_LEADING) continue
@@ -449,7 +500,7 @@ class DroidImeService : InputMethodService() {
                 if (out.size == 3) return out
             }
         }
-        return out
+        return if (out.size > 1) out else emptyList()
     }
 
     private fun applySuggestion(suggestion: Suggestion) {
@@ -1473,7 +1524,8 @@ class DroidImeService : InputMethodService() {
         private const val STRIP_EXTRA_DP = 45
 
         // Thai characters a word cannot start with (vowel and tone marks, ะ า ำ ๅ ๆ ฯ).
-        private const val THAI_NON_LEADING = "ะาำัิีึืุู็่้๊๋์ํๅๆฯฺ"
+        private const val EDIT_PENALTY = 5
+        private const val THAI_NON_LEADING ="ะาำัิีึืุู็่้๊๋์ํๅๆฯฺ"
 
         private val SETTINGS_KEYS = setOf(
             "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints", "suggestions"
