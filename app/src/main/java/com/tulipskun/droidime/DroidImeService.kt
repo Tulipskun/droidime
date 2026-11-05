@@ -46,13 +46,16 @@ class DroidImeService : InputMethodService() {
     private enum class KeyStyle {
         NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY
     }
-    private enum class EmojiCategory(val title: String, val items: List<String>) {
-        FACES("Faces", listOf("😀","😃","😄","😁","😆","😅","😂","🤣","😊","😉","😍","🥰","😘","😋","😜","🤪","🤔","😎","🥳","🥺","😭","😱","🤖","👻","💩","🎃")),
-        PEOPLE("People", listOf("👋","👌","✌️","🤞","🤟","🤘","👍","👎","👏","🙌","🙏","💪","👀","👄","👶","🧒","👦","👧","🧑","👨","👩","🤦","🤷","🧑‍💻")),
-        NATURE("Nature", listOf("🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🦋","🐝","🐢","🐍","🦖","🐙","🦀","🐠","🐬","🌸","🌹","🌻","🌈","☀️","🌙")),
-        FOOD("Food", listOf("🍏","🍎","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍒","🍑","🥭","🍍","🥝","🍅","🥑","🥦","🥕","🍞","🧀","🍳","🍔","🍟","🍕","🌮","🍜","🍣","🍱","🍦","🍰","🎂","🍩","☕","🧋")),
-        TRAVEL("Travel", listOf("🚗","🚕","🚌","🏎️","🚑","🚒","🚲","🛴","🚦","✈️","🚀","🛸","🌍","🗺️","🏔️","🏕️","🏖️","🏠","🏢","🏰","🗼","🗽")),
-        SYMBOLS("Symbols", listOf("❤️","🧡","💛","💚","💙","💜","🖤","🤍","💔","💕","💞","💓","💗","💖","💘","💝","☮️","✝️","☪️","🕉️","☯️","❌","⭕","💯","❗","❓","⚠️","♻️","✅","➡️","⬅️","⬆️","⬇️"))
+    private enum class EmojiCategory(val title: String, val icon: String, val items: List<String>) {
+        FACES("Faces", "😀", listOf("😀","😃","😄","😁","😆","😅","😂","🤣","😊","😉","😍","🥰","😘","😋","😜","🤪","🤔","😎","🥳","🥺","😭","😱","🤖","👻","💩","🎃")),
+        PEOPLE("People", "👤", listOf("👋","👌","✌️","🤞","🤟","🤘","👍","👎","👏","🙌","🙏","💪","👀","👄","👶","🧒","👦","👧","🧑","👨","👩","🤦","🤷","🧑‍💻")),
+        NATURE("Animals & nature", "🐾", listOf("🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🦋","🐝","🐢","🐍","🦖","🐙","🦀","🐠","🐬","🌸","🌹","🌻","🌈","☀️","🌙")),
+        FOOD("Food & drink", "🍎", listOf("🍏","🍎","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍒","🍑","🥭","🍍","🥝","🍅","🥑","🥦","🥕","🍞","🧀","🍳","🍔","🍟","🍕","🌮","🍜","🍣","🍱","🍦","🍰","🎂","🍩","☕","🧋")),
+        ACTIVITIES("Activities", "⚽", listOf("⚽","🏀","🏈","⚾","🥎","🎾","🏐","🏉","🥏","🎱","🏓","🏸","🥅","⛳","🏹","🎣","🤿","🥊","🥋","🎽","🛹","🛼","🛷","⛸️","🎿","🏆","🥇","🎮","🕹️","🎲","🧩","🎯","🎨","🎭","🎤","🎧","🎼","🎹","🥁")),
+        TRAVEL("Travel & places", "🚗", listOf("🚗","🚕","🚌","🏎️","🚑","🚒","🚲","🛴","🚦","✈️","🚀","🛸","🌍","🗺️","🏔️","🏕️","🏖️","🏠","🏢","🏰","🗼","🗽","🚆","🚇","🚢","⛵","🚁","🌋","🏝️","🌃")),
+        OBJECTS("Objects", "💡", listOf("💡","🔦","🕯️","🪔","📱","💻","⌨️","🖥️","🖨️","🖱️","🕹️","💽","💾","📷","📹","🎥","📺","📻","⏰","⌚","🔋","🔌","💰","💎","🔧","🔨","⚙️","🧲","💊","🩹","📚","✏️","🖊️","✂️","🔒","🔑")),
+        SYMBOLS("Symbols", "♥", listOf("❤️","🧡","💛","💚","💙","💜","🖤","🤍","💔","💕","💞","💓","💗","💖","💘","💝","☮️","✝️","☪️","🕉️","☯️","❌","⭕","💯","❗","❓","⚠️","♻️","✅","➡️","⬅️","⬆️","⬇️")),
+        FLAGS("Flags", "🏳️", listOf("🏳️","🏴","🏁","🚩","🏳️‍🌈","🏳️‍⚧️","🇹🇭","🇺🇸","🇬🇧","🇯🇵","🇰🇷","🇨🇳","🇮🇳","🇫🇷","🇩🇪","🇮🇹","🇪🇸","🇧🇷","🇨🇦","🇦🇺","🇳🇿","🇸🇬","🇲🇾","🇮🇩","🇻🇳","🇵🇭","🇱🇦","🇰🇭","🇲🇲"))
     }
 
     private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
@@ -1320,7 +1323,7 @@ class DroidImeService : InputMethodService() {
                 style == KeyStyle.SPACE -> "Space"
                 style == KeyStyle.HEADER || style == KeyStyle.HEADER_CLOSE -> label
                 style == KeyStyle.EMOJI -> "Emoji $label"
-                style == KeyStyle.EMOJI_CATEGORY -> "Emoji category $label"
+                style == KeyStyle.EMOJI_CATEGORY -> "Emoji category ${EmojiCategory.values().firstOrNull { it.icon == label }?.title ?: label}"
                 style == KeyStyle.CLIP -> label.ifEmpty { "Empty clipboard slot" }
                 label == GLOBE -> "Switch language"
                 label == DELETE -> "Delete"
@@ -1831,7 +1834,7 @@ class DroidImeService : InputMethodService() {
             rows.add(listOf(3f to Cell("Emoji", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() })))
             rows.add(EmojiCategory.values().map { category ->
-                1f to Cell(category.title, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
+                1f to Cell(category.icon, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
             })
             emojiCategory.items.chunked(8).forEach { group ->
                 rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
@@ -1862,14 +1865,14 @@ class DroidImeService : InputMethodService() {
         }
 
         private fun drawEmojiPanelCell(canvas: Canvas, cell: Cell, colors: Palette) {
-            val selected = cell.style == KeyStyle.EMOJI_CATEGORY && cell.label == emojiCategory.title
+            val selected = cell.style == KeyStyle.EMOJI_CATEGORY && cell.label == emojiCategory.icon
             shape.setColor(if (cell === pressed || selected) colors.active else colors.key)
             shape.setBounds((cell.rect.left + dpf(2f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
                 (cell.rect.right - dpf(2f)).toInt(), (cell.rect.bottom - dpf(2f)).toInt())
             shape.cornerRadius = if (cell.style == KeyStyle.EMOJI) dpf(8f) else dpf(12f); shape.draw(canvas)
             textPaint.color = if (selected) colors.enterText else colors.text
             textPaint.typeface = if (cell.style == KeyStyle.EMOJI_CATEGORY) mediumFace else Typeface.DEFAULT
-            textPaint.textSize = dpf(if (cell.style == KeyStyle.EMOJI) 25f else 10.5f)
+            textPaint.textSize = dpf(if (cell.style == KeyStyle.EMOJI) 25f else 20f)
             textPaint.textAlign = Paint.Align.CENTER
             val m = textPaint.fontMetrics
             canvas.drawText(cell.label, cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
