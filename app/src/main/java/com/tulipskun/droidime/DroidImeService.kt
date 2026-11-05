@@ -1318,7 +1318,7 @@ class DroidImeService : InputMethodService() {
         companion object {
             fun describe(label: String, style: KeyStyle): String = when {
                 style == KeyStyle.SPACE -> "Space"
-                style == KeyStyle.HEADER, style == KeyStyle.HEADER_CLOSE -> label
+                style == KeyStyle.HEADER || style == KeyStyle.HEADER_CLOSE -> label
                 style == KeyStyle.EMOJI -> "Emoji $label"
                 style == KeyStyle.EMOJI_CATEGORY -> "Emoji category $label"
                 style == KeyStyle.CLIP -> label.ifEmpty { "Empty clipboard slot" }
