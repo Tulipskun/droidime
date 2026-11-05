@@ -249,13 +249,14 @@ class MainActivity : Activity() {
             text = "Frequently corrected keys: " + correctionSummary +
                 "\nGlide words deleted: " + preferences.getInt("glide_corrections", 0) +
                 "\nAlternative glide suggestions chosen: " + preferences.getInt("glide_alternatives", 0) +
+                "\nMost corrected glide grid cells: " + preferences.getString("glide_position_stats", "").orEmpty().lines().take(8).joinToString(" · ") +
                 "\n\nOnly local correction counts are stored. Full typed text and passwords are not recorded."
             textSize = 13f
             setTextColor(bodyColor)
             setPadding(0, dp(2), 0, dp(10))
         })
         learningCard.addView(actionButton("Reset typing data") {
-            preferences.edit().remove("correction_stats").remove("glide_corrections").remove("glide_alternatives").apply()
+            preferences.edit().remove("correction_stats").remove("glide_corrections").remove("glide_alternatives").remove("glide_position_stats").apply()
             recreate()
         })
         content.addView(learningCard, sectionParams())
