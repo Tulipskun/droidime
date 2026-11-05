@@ -145,6 +145,9 @@ class DroidImeService : InputMethodService() {
     )
 
     private var suggestions: List<Suggestion> = emptyList()
+    // After a glide word is committed, the strip offers the runner-up words until the text changes.
+    private var glideCommitted: String? = null
+    private var glideAlternatives: List<Suggestion> = emptyList()
     @Volatile private var dictEn: Dictionary? = null
     @Volatile private var dictTh: Dictionary? = null
 
@@ -427,6 +430,11 @@ class DroidImeService : InputMethodService() {
         val type = currentInputEditorInfo?.inputType ?: return emptyList()
         if ((type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return emptyList()
         val connection = currentInputConnection ?: return emptyList()
+        glideCommitted?.let { committed ->
+            val tail = connection.getTextBeforeCursor(committed.length, 0)?.toString()
+            if (tail == committed) return glideAlternatives
+            glideCommitted = null
+        }
         val after = connection.getTextAfterCursor(1, 0)
         if (!after.isNullOrEmpty() && after[0].isLetterOrDigit()) return emptyList()
         val before = connection.getTextBeforeCursor(24, 0)?.toString() ?: return emptyList()
@@ -505,8 +513,134 @@ class DroidImeService : InputMethodService() {
         return out
     }
 
+    // ---- Glide typing -------------------------------------------------------------------------
+
+    private fun glideAllowed(): Boolean =
+        language == Language.ENGLISH && !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
+            dictEn != null && preferences.getBoolean("glide_typing", true)
+
+    private fun hypotf(dx: Float, dy: Float): Float = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+
+    private fun pathLength(xs: FloatArray, ys: FloatArray): Float {
+        var total = 0f
+        for (i in 1 until xs.size) total += hypotf(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
+        return total
+    }
+
+    // `n` points spaced evenly along the polyline, as x0,y0,x1,y1,...
+    private fun resample(xs: FloatArray, ys: FloatArray, n: Int): FloatArray {
+        val out = FloatArray(n * 2)
+        val total = pathLength(xs, ys)
+        if (xs.size < 2 || total <= 0f) {
+            for (k in 0 until n) {
+                out[2 * k] = xs[0]
+                out[2 * k + 1] = ys[0]
+            }
+            return out
+        }
+        val step = total / (n - 1)
+        var seg = 1
+        var segStart = 0f
+        var segLen = hypotf(xs[1] - xs[0], ys[1] - ys[0])
+        for (k in 0 until n) {
+            val target = step * k
+            while (seg < xs.size - 1 && segStart + segLen < target) {
+                segStart += segLen
+                seg++
+                segLen = hypotf(xs[seg] - xs[seg - 1], ys[seg] - ys[seg - 1])
+            }
+            val t = if (segLen > 0f) ((target - segStart) / segLen).coerceIn(0f, 1f) else 0f
+            out[2 * k] = xs[seg - 1] + (xs[seg] - xs[seg - 1]) * t
+            out[2 * k + 1] = ys[seg - 1] + (ys[seg] - ys[seg - 1]) * t
+        }
+        return out
+    }
+
+    // Words whose key-to-key path best matches the finger's path: only words that start and end
+    // near where the gesture did are tried, each path is resampled to the same number of points
+    // and compared, and word frequency breaks near-ties. Returns up to three words, best first.
+    private fun glideCandidates(
+        xs: FloatArray, ys: FloatArray, centers: Map<Char, FloatArray>, keyW: Float
+    ): List<String> {
+        val dict = dictEn ?: return emptyList()
+        if (xs.size < 2 || centers.isEmpty() || keyW <= 0f) return emptyList()
+        val n = 32
+        val gesture = resample(xs, ys, n)
+        val gestureLen = pathLength(xs, ys)
+        fun near(x: Float, y: Float): Set<Char> {
+            val keys = HashSet<Char>()
+            for ((letter, c) in centers) if (hypotf(c[0] - x, c[1] - y) <= keyW * 1.6f) keys.add(letter)
+            return keys
+        }
+        val firstKeys = near(xs.first(), ys.first())
+        val lastKeys = near(xs.last(), ys.last())
+        if (firstKeys.isEmpty() || lastKeys.isEmpty()) return emptyList()
+        var maxFreq = 1
+        for (f in dict.freqs) if (f > maxFreq) maxFreq = f
+        // The first and last few points count five times as much: where a glide starts and ends
+        // says most about the word (tuned on simulated glides over the dictionary, ~93% top-1).
+        val pointWeights = FloatArray(n) { if (it < 3 || it >= n - 3) 5f else 1f }
+        val weightSum = pointWeights.sum()
+        val wx = FloatArray(64)
+        val wy = FloatArray(64)
+        val scored = ArrayList<Pair<Float, String>>()
+        for (i in dict.words.indices) {
+            val word = dict.words[i]
+            if (word.length < 2 || word.length > 40) continue
+            if (word[0] !in firstKeys || word[word.length - 1] !in lastKeys) continue
+            var m = 0
+            var ok = true
+            for (ch in word) {
+                val c = centers[ch]
+                if (c == null) {
+                    ok = false
+                    break
+                }
+                if (m > 0 && wx[m - 1] == c[0] && wy[m - 1] == c[1]) continue
+                wx[m] = c[0]
+                wy[m] = c[1]
+                m++
+            }
+            if (!ok || m < 2) continue
+            val px = wx.copyOf(m)
+            val py = wy.copyOf(m)
+            val idealLen = pathLength(px, py)
+            if (idealLen < gestureLen * 0.4f || idealLen > gestureLen * 2.5f) continue
+            val ideal = resample(px, py, n)
+            var sum = 0f
+            for (k in 0 until n) {
+                sum += pointWeights[k] * hypotf(ideal[2 * k] - gesture[2 * k], ideal[2 * k + 1] - gesture[2 * k + 1])
+            }
+            val distance = sum / weightSum / keyW
+            if (distance > 2f) continue
+            scored.add((distance - dict.freqs[i] / maxFreq.toFloat() * 0.8f) to word)
+        }
+        scored.sortBy { it.first }
+        return scored.take(3).map { it.second }
+    }
+
+    private fun commitGlide(words: List<String>) {
+        val connection = currentInputConnection ?: return
+        if (words.isEmpty()) return
+        fun styled(word: String) = when {
+            shiftLocked -> word.uppercase()
+            shifted -> word.replaceFirstChar { it.uppercase() }
+            else -> word
+        }
+        val shown = words.map { styled(it) }
+        val previous = connection.getTextBeforeCursor(1, 0)?.toString()
+        val lead = if (!previous.isNullOrEmpty() && (previous[0].isLetterOrDigit() || previous[0] in ".,!?;:")) " " else ""
+        val committed = shown[0] + " "
+        connection.commitText(lead + committed, 1)
+        glideCommitted = committed
+        glideAlternatives = shown.map { Suggestion(it, committed.length, " ") }
+        lastSpaceTap = 0L
+        afterTextChanged()
+    }
+
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
+        glideCommitted = null
         connection.beginBatchEdit()
         connection.deleteSurroundingText(suggestion.replaceLen, 0)
         connection.commitText(suggestion.text + suggestion.append, 1)
@@ -767,6 +901,17 @@ class DroidImeService : InputMethodService() {
         private var pressed: Cell? = null
         private val pressHandler = Handler(Looper.getMainLooper())
         private var longPressFired = false
+        private var glideStartCell: Cell? = null
+        private var glideActive = false
+        private var glideLength = 0f
+        private val glideX = ArrayList<Float>()
+        private val glideY = ArrayList<Float>()
+        private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            color = Color.argb(200, 138, 180, 248)
+        }
         private var pendingLongPress: Runnable? = null
 
         init {
@@ -815,6 +960,13 @@ class DroidImeService : InputMethodService() {
             super.onDraw(canvas)
             canvas.drawColor(palette.background)
             cells.forEach { drawCell(canvas, it) }
+            if (glideActive && glideX.size > 1) {
+                val trail = Path()
+                trail.moveTo(glideX[0], glideY[0])
+                for (i in 1 until glideX.size) trail.lineTo(glideX[i], glideY[i])
+                trailPaint.strokeWidth = dpf(5f)
+                canvas.drawPath(trail, trailPaint)
+            }
         }
 
         // Each row is a list of (weight, cell) slots; a null cell is an indent spacer.
@@ -1399,6 +1551,17 @@ class DroidImeService : InputMethodService() {
                     pressed = cell
                     longPressFired = false
                     invalidate()
+                    glideActive = false
+                    glideStartCell = null
+                    glideLength = 0f
+                    glideX.clear()
+                    glideY.clear()
+                    if (cell != null && glideAllowed() && cell.style == KeyStyle.NORMAL &&
+                        cell.label.length == 1 && cell.label[0].lowercaseChar() in 'a'..'z') {
+                        glideStartCell = cell
+                        glideX.add(event.x)
+                        glideY.add(event.y)
+                    }
                     if (cell != null) {
                         keyFeedback(this)
                         if (cell.isDelete) {
@@ -1417,6 +1580,19 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (glideStartCell != null) {
+                        for (h in 0 until event.historySize) addGlidePoint(event.getHistoricalX(h), event.getHistoricalY(h))
+                        addGlidePoint(event.x, event.y)
+                        if (!glideActive && glideLength >= dpf(28f) && cellAt(event.x, event.y) !== glideStartCell) {
+                            glideActive = true
+                            cancelPendingLongPress()
+                            pressed = null
+                        }
+                        if (glideActive) {
+                            invalidate()
+                            return true
+                        }
+                    }
                     val cell = cellAt(event.x, event.y)
                     if (cell !== pressed) {
                         pressed = cell
@@ -1427,6 +1603,20 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
+                    if (glideActive) {
+                        addGlidePoint(event.x, event.y)
+                        val xs = glideX.toFloatArray()
+                        val ys = glideY.toFloatArray()
+                        glideActive = false
+                        glideStartCell = null
+                        glideX.clear()
+                        glideY.clear()
+                        pressed = null
+                        invalidate()
+                        commitGlide(glideCandidates(xs, ys, letterCenters(), letterKeyWidth()))
+                        return true
+                    }
+                    glideStartCell = null
                     cancelPendingLongPress()
                     val wasRepeating = deleteRepeat != null
                     stopDeleteRepeat()
@@ -1442,6 +1632,10 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    glideActive = false
+                    glideStartCell = null
+                    glideX.clear()
+                    glideY.clear()
                     cancelPendingLongPress()
                     stopDeleteRepeat()
                     pressed = null
@@ -1451,6 +1645,34 @@ class DroidImeService : InputMethodService() {
                 }
             }
             return super.onTouchEvent(event)
+        }
+
+        private fun addGlidePoint(x: Float, y: Float) {
+            if (glideX.isNotEmpty()) {
+                glideLength += hypotf(x - glideX.last(), y - glideY.last())
+            }
+            glideX.add(x)
+            glideY.add(y)
+        }
+
+        private fun letterCenters(): Map<Char, FloatArray> {
+            val map = HashMap<Char, FloatArray>()
+            for (cell in cells) {
+                if (cell.style == KeyStyle.NORMAL && cell.label.length == 1) {
+                    val letter = cell.label[0].lowercaseChar()
+                    if (letter in 'a'..'z') map[letter] = floatArrayOf(cell.rect.centerX(), cell.rect.centerY())
+                }
+            }
+            return map
+        }
+
+        private fun letterKeyWidth(): Float {
+            for (cell in cells) {
+                if (cell.style == KeyStyle.NORMAL && cell.label.length == 1 && cell.label[0].lowercaseChar() == 'q') {
+                    return cell.rect.width()
+                }
+            }
+            return dpf(36f)
         }
 
         private fun cellAt(x: Float, y: Float): Cell? {
