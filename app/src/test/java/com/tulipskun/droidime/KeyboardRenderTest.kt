@@ -117,6 +117,21 @@ class KeyboardRenderTest {
             )
             writePng(File(outDir, "${s.file}.png"), width, height, pixels)
         }
+
+        val emojiCategory = Class.forName("com.tulipskun.droidime.DroidImeService\$EmojiCategory")
+        service.setField("clipPanelVisible", false)
+        service.setField("emojiPanelVisible", true)
+        for (category in emojiCategory.enumConstants!!) {
+            service.setField("emojiCategory", category)
+            rebuild.invoke(view)
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bmp))
+            val pixels = IntArray(width * height)
+            bmp.getPixels(pixels, 0, width, 0, 0, width, height)
+            val distinct = pixels.toHashSet().size
+            org.junit.Assert.assertTrue("emoji ${(category as Enum<*>).name} rendered blank", distinct > 8)
+            writePng(File(outDir, "emoji_${(category as Enum<*>).name.lowercase()}.png"), width, height, pixels)
+        }
     }
 
     private fun enumOf(cls: Class<*>, name: String): Any =
