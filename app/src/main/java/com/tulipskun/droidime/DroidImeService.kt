@@ -1230,7 +1230,7 @@ class DroidImeService : InputMethodService() {
         lastTouchEventAt = SystemClock.elapsedRealtime()
     }
 
-    private fun recordKeyTouch(x: Float, y: Float, viewWidth: Int, viewHeight: Int, cell: KeyCell?) {
+    private fun recordKeyTouch(x: Float, y: Float, viewWidth: Int, viewHeight: Int, cell: Cell?) {
         if (fieldKind != FieldKind.TEXT || viewWidth <= 0 || viewHeight <= 0) return
         val event = JSONObject()
             .put("type", "key_touch")
