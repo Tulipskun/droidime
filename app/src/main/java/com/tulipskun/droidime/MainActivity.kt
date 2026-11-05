@@ -2,24 +2,19 @@ package com.tulipskun.droidime
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -46,14 +41,8 @@ class MainActivity : Activity() {
     private lateinit var setupStatus: TextView
     private lateinit var updateButton: TextView
     private lateinit var downloadProgress: ProgressBar
-    private val progressHandler = Handler(Looper.getMainLooper())
-    private var progressRunnable: Runnable? = null
-    private var downloadId = -1L
-    private var receiverRegistered = false
-    private var pendingUrl: String? = null
-    private var retries = 0
-    private var lastBytes = -1L
-    private var lastProgressAt = 0L
+    @Volatile private var downloading = false
+    @Volatile private var destroyed = false
 
     private val preferences by lazy {
         getSharedPreferences("keyboard_settings", MODE_PRIVATE)
@@ -76,14 +65,6 @@ class MainActivity : Activity() {
     private val bodyColor get() = if (dark) Color.rgb(185, 191, 203) else Color.rgb(82, 91, 108)
     private val inputColor get() = if (dark) Color.rgb(52, 54, 60) else Color.rgb(245, 247, 251)
     private val okColor get() = if (dark) Color.rgb(98, 201, 150) else Color.rgb(36, 125, 84)
-
-    private val downloadReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) == downloadId) {
-                refreshDownloadStatus()
-            }
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(if (dark) R.style.AppThemeDark else R.style.AppTheme)
@@ -435,8 +416,6 @@ class MainActivity : Activity() {
                         status.text = getString(R.string.update_latest)
                     } else {
                         status.text = getString(R.string.update_available, version)
-                        retries = 0
-                        pendingUrl = downloadUrl
                         installUpdate(downloadUrl)
                     }
                 }
@@ -458,175 +437,133 @@ class MainActivity : Activity() {
             })
             return
         }
+        if (downloading) return
+        downloading = true
+        downloadProgress.visibility = View.VISIBLE
+        downloadProgress.isIndeterminate = true
+        updateButton.isEnabled = false
+        status.text = "Connecting…"
 
+        // The system DownloadManager can sit at "0 B" forever on some phones (data saver, battery
+        // optimisation, a wedged download service), so the app downloads the APK itself: real
+        // timeouts, real progress, and a few automatic retries.
+        executor.execute {
+            val dir = java.io.File(cacheDir, UpdateFileProvider.DIR).apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            val target = java.io.File(dir, UpdateFileProvider.FILE)
+            val part = java.io.File(dir, UpdateFileProvider.FILE + ".part")
+            var failure = "unknown error"
+            var done = false
+            for (attempt in 1..MAX_ATTEMPTS) {
+                if (destroyed) return@execute
+                try {
+                    downloadTo(downloadUrl, part, attempt)
+                    done = true
+                    break
+                } catch (error: Exception) {
+                    failure = error.message ?: error.javaClass.simpleName
+                    if (attempt < MAX_ATTEMPTS) {
+                        ui { status.text = "Download failed ($failure), retrying ${attempt + 1}/$MAX_ATTEMPTS…" }
+                        Thread.sleep(1500)
+                    }
+                }
+            }
+            if (!done) {
+                part.delete()
+                finishDownload("Download failed: $failure")
+                return@execute
+            }
+            target.delete()
+            if (!part.renameTo(target)) {
+                finishDownload("Download failed: could not save the file")
+                return@execute
+            }
+            // Refuse anything that is not a newer build of this app before offering to install it.
+            @Suppress("DEPRECATION")
+            val info = packageManager.getPackageArchiveInfo(target.path, 0)
+            @Suppress("DEPRECATION")
+            val code = info?.versionCode ?: -1
+            if (info == null || info.packageName != packageName || code <= BuildConfig.VERSION_CODE) {
+                target.delete()
+                finishDownload("Downloaded file is not a newer DroidIME build")
+                return@execute
+            }
+            ui {
+                downloading = false
+                downloadProgress.visibility = View.GONE
+                updateButton.isEnabled = true
+                openInstaller()
+            }
+        }
+    }
+
+    private fun ui(block: () -> Unit) {
+        if (destroyed) return
+        runOnUiThread { if (!destroyed && !isFinishing) block() }
+    }
+
+    private fun finishDownload(message: String) = ui {
+        downloading = false
+        downloadProgress.visibility = View.GONE
+        updateButton.isEnabled = true
+        status.text = message
+    }
+
+    private fun downloadTo(url: String, out: java.io.File, attempt: Int) {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15000
+            readTimeout = 20000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "DroidIME-Android")
+            setRequestProperty("Accept", "application/octet-stream")
+            setRequestProperty("Accept-Encoding", "identity")
+        }
         try {
-            val manager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
-            // A leftover download or file from an earlier attempt can leave the new one stuck at
-            // 0 B (pending) or failing with "file already exists", so clear both first.
-            val previousId = preferences.getLong("update_download_id", -1L)
-            if (previousId != -1L) manager.remove(previousId)
-            if (downloadId != -1L) manager.remove(downloadId)
-            getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.let {
-                java.io.File(it, "DroidIME-update.apk").delete()
+            val code = connection.responseCode
+            if (code != 200) throw java.io.IOException("HTTP $code")
+            val total = connection.contentLengthLong
+            ui {
+                downloadProgress.isIndeterminate = total <= 0L
+                status.text = if (attempt > 1) "Downloading update (attempt $attempt)…" else "Downloading update…"
             }
-            if (receiverRegistered) {
-                unregisterReceiver(downloadReceiver)
-                receiverRegistered = false
-            }
-
-            val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-            if (Build.VERSION.SDK_INT >= 33) {
-                registerReceiver(downloadReceiver, filter, Context.RECEIVER_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                registerReceiver(downloadReceiver, filter)
-            }
-            receiverRegistered = true
-
-            val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
-                setTitle(getString(R.string.app_name))
-                setDescription("Downloading DroidIME update")
-                setMimeType("application/vnd.android.package-archive")
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, "DroidIME-update.apk")
-                setAllowedOverMetered(true)
-                setAllowedOverRoaming(true)
-            }
-
-            downloadProgress.visibility = View.VISIBLE
-            downloadProgress.isIndeterminate = true
-            downloadProgress.progress = 0
-            updateButton.isEnabled = false
-            status.text = "Starting download…"
-            downloadId = manager.enqueue(request)
-            preferences.edit().putLong("update_download_id", downloadId).apply()
-            lastBytes = -1L
-            lastProgressAt = SystemClock.uptimeMillis()
-            startDownloadPolling()
-        } catch (error: Exception) {
-            stopDownloadPolling()
-            if (receiverRegistered) {
-                unregisterReceiver(downloadReceiver)
-                receiverRegistered = false
-            }
-            downloadProgress.visibility = View.GONE
-            updateButton.isEnabled = true
-            status.text = "Could not start download: ${error.message ?: "unknown error"}"
-        }
-    }
-
-    private fun startDownloadPolling() {
-        stopDownloadPolling()
-        progressRunnable = object : Runnable {
-            override fun run() {
-                refreshDownloadStatus()
-                if (downloadId != -1L && progressRunnable === this) {
-                    progressHandler.postDelayed(this, 350)
-                }
-            }
-        }
-        progressHandler.post(progressRunnable!!)
-    }
-
-    private fun stopDownloadPolling() {
-        progressRunnable?.let { progressHandler.removeCallbacks(it) }
-        progressRunnable = null
-    }
-
-    private fun refreshDownloadStatus() {
-        if (downloadId == -1L || isFinishing || isDestroyed) return
-        val manager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
-        val cursor = manager.query(DownloadManager.Query().setFilterById(downloadId)) ?: return
-        cursor.use {
-            if (!it.moveToFirst()) return
-            val state = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            val downloaded = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-            val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            when (state) {
-                DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED -> {
-                    val now = SystemClock.uptimeMillis()
-                    if (downloaded != lastBytes) {
-                        lastBytes = downloaded
-                        lastProgressAt = now
-                    } else if (state != DownloadManager.STATUS_PAUSED && now - lastProgressAt > STALL_MS) {
-                        restartStalledDownload(manager)
-                        return
-                    }
-                    downloadProgress.isIndeterminate = total <= 0L
-                    if (total > 0L) {
-                        val percent = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
-                        downloadProgress.progress = percent
-                        status.text = "Downloading update: $percent% · ${formatBytes(downloaded)} / ${formatBytes(total)}"
-                    } else {
-                        status.text = "Downloading update · ${formatBytes(downloaded)}"
-                    }
-                    if (state == DownloadManager.STATUS_PAUSED) {
-                        val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                        status.text = "Download paused: ${downloadReason(reason)}"
-                    }
-                }
-                DownloadManager.STATUS_SUCCESSFUL -> {
-                    val completedId = downloadId
-                    stopDownloadPolling()
-                    downloadId = -1L
-                    downloadProgress.isIndeterminate = false
-                    downloadProgress.progress = 100
-                    downloadProgress.visibility = View.GONE
-                    preferences.edit().remove("update_download_id").apply()
-                    updateButton.isEnabled = true
-                    if (receiverRegistered) {
-                        unregisterReceiver(downloadReceiver)
-                        receiverRegistered = false
-                    }
-                    openDownloadedInstaller(manager, completedId)
-                }
-                DownloadManager.STATUS_FAILED -> {
-                    val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                    stopDownloadPolling()
-                    downloadId = -1L
-                    downloadProgress.visibility = View.GONE
-                    updateButton.isEnabled = true
-                    status.text = "Download failed: ${downloadReason(reason)} (code $reason)"
-                    preferences.edit().remove("update_download_id").apply()
-                    if (receiverRegistered) {
-                        unregisterReceiver(downloadReceiver)
-                        receiverRegistered = false
+            var downloaded = 0L
+            var lastUi = 0L
+            connection.inputStream.use { input ->
+                out.outputStream().use { output ->
+                    val buffer = ByteArray(32 * 1024)
+                    while (true) {
+                        if (destroyed) throw java.io.IOException("cancelled")
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        output.write(buffer, 0, n)
+                        downloaded += n
+                        val now = System.currentTimeMillis()
+                        if (now - lastUi > 200) {
+                            lastUi = now
+                            val soFar = downloaded
+                            ui {
+                                if (total > 0L) {
+                                    val percent = ((soFar * 100L) / total).toInt().coerceIn(0, 100)
+                                    downloadProgress.progress = percent
+                                    status.text = "Downloading update: $percent% · ${formatBytes(soFar)} / ${formatBytes(total)}"
+                                } else {
+                                    status.text = "Downloading update · ${formatBytes(soFar)}"
+                                }
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-
-    // No bytes for STALL_MS (stuck pending, dead connection): drop the download and start over a
-    // couple of times before giving up, so a hung request doesn't need a manual retry.
-    private fun restartStalledDownload(manager: DownloadManager) {
-        stopDownloadPolling()
-        manager.remove(downloadId)
-        downloadId = -1L
-        preferences.edit().remove("update_download_id").apply()
-        val url = pendingUrl
-        if (url != null && retries < MAX_RETRIES) {
-            retries++
-            status.text = "Download stalled, retrying ($retries/$MAX_RETRIES)…"
-            installUpdate(url)
-        } else {
-            if (receiverRegistered) {
-                unregisterReceiver(downloadReceiver)
-                receiverRegistered = false
+            if (total > 0L && downloaded != total) {
+                throw java.io.IOException("incomplete download (${formatBytes(downloaded)} of ${formatBytes(total)})")
             }
-            downloadProgress.visibility = View.GONE
-            updateButton.isEnabled = true
-            status.text = "Download stalled. Check your connection and try again."
+        } finally {
+            connection.disconnect()
         }
     }
 
-    private fun openDownloadedInstaller(manager: DownloadManager, completedId: Long) {
-        val uri = manager.getUriForDownloadedFile(completedId)
-        if (uri == null) {
-            updateButton.isEnabled = true
-            status.text = "Download finished, but the APK file could not be opened."
-            return
-        }
+    private fun openInstaller() {
+        val uri = Uri.parse("content://$packageName.updates/${UpdateFileProvider.FILE}")
         try {
             status.text = "Download complete. Opening installer…"
             val installIntent = Intent(Intent.ACTION_VIEW).apply {
@@ -635,26 +572,8 @@ class MainActivity : Activity() {
             }
             startActivity(installIntent)
         } catch (error: Exception) {
-            updateButton.isEnabled = true
             status.text = "Could not open installer: ${error.message ?: "unknown error"}"
         }
-    }
-
-    private fun downloadReason(reason: Int): String = when (reason) {
-        DownloadManager.ERROR_CANNOT_RESUME -> "cannot resume"
-        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "storage unavailable"
-        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "file already exists"
-        DownloadManager.ERROR_FILE_ERROR -> "file error"
-        DownloadManager.ERROR_HTTP_DATA_ERROR -> "network data error"
-        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "not enough storage"
-        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "too many redirects"
-        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "HTTP error"
-        DownloadManager.ERROR_UNKNOWN -> "unknown download error"
-        DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "waiting for Wi-Fi"
-        DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "waiting for network"
-        DownloadManager.PAUSED_WAITING_TO_RETRY -> "waiting to retry"
-        DownloadManager.PAUSED_UNKNOWN -> "paused"
-        else -> "reason $reason"
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -664,13 +583,11 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        private const val STALL_MS = 25_000L
-        private const val MAX_RETRIES = 2
+        private const val MAX_ATTEMPTS = 3
     }
 
     override fun onDestroy() {
-        stopDownloadPolling()
-        if (receiverRegistered) unregisterReceiver(downloadReceiver)
+        destroyed = true
         executor.shutdownNow()
         super.onDestroy()
     }
