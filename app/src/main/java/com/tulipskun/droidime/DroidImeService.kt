@@ -1249,14 +1249,17 @@ class DroidImeService : InputMethodService() {
     private fun markLastTouchCorrected() {
         if (fieldKind != FieldKind.TEXT || SystemClock.elapsedRealtime() - lastTouchEventAt > 5000L) return
         val events = touchHistory()
-        val lastGesture = events.lastOrNull()
-        if (lastGesture?.optString("type") == "glide_point") {
-            val gestureTime = lastGesture.optLong("time")
+        val glideIndex = events.indexOfLast { it.optString("type") == "glide_point" }
+        val keyIndex = events.indexOfLast {
+            it.optString("type") == "key_touch" && it.optString("key") !in setOf("space", "delete", "enter") &&
+                !it.optBoolean("corrected")
+        }
+        if (glideIndex > keyIndex && glideIndex >= 0) {
+            val gestureTime = events[glideIndex].optLong("time")
             events.filter { it.optString("type") == "glide_point" && it.optLong("time") == gestureTime }
                 .forEach { it.put("rejected", true) }
-        } else {
-            val index = events.indexOfLast { it.optString("type") == "key_touch" && !it.optBoolean("corrected") }
-            if (index >= 0) events[index].put("corrected", true)
+        } else if (keyIndex >= 0) {
+            events[keyIndex].put("corrected", true)
         }
         preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
     }
