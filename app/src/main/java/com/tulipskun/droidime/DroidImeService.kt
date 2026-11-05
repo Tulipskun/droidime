@@ -1409,6 +1409,7 @@ class DroidImeService : InputMethodService() {
         private var pressed: Cell? = null
         private val pressHandler = Handler(Looper.getMainLooper())
         private var longPressFired = false
+        private var spaceDragMoved = false
         private var glideStartCell: Cell? = null
         private var glideActive = false
         private var glideLength = 0f
@@ -2330,6 +2331,15 @@ class DroidImeService : InputMethodService() {
                     val cell = cellAt(event.x, event.y)
                     pressed = cell
                     longPressFired = false
+                    spaceDragMoved = false
+                    if (cell?.style == KeyStyle.SPACE && !panelOpen()) {
+                        val extracted = currentInputConnection?.getExtractedText(ExtractedTextRequest(), 0)
+                        if (extracted != null && extracted.selectionStart >= 0) {
+                            spaceDragStartX = event.x
+                            spaceDragStartCursor = extracted.startOffset + extracted.selectionStart
+                            spaceDragLastCursor = spaceDragStartCursor
+                        } else spaceDragStartCursor = -1
+                    } else spaceDragStartCursor = -1
                     invalidate()
                     glideActive = false
                     glideStartCell = null
@@ -2376,6 +2386,18 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (spaceDragStartCursor >= 0 && pressed?.style == KeyStyle.SPACE) {
+                        val extracted = currentInputConnection?.getExtractedText(ExtractedTextRequest(), 0)
+                        if (extracted != null && extracted.selectionStart >= 0) {
+                            val steps = kotlin.math.round((event.x - spaceDragStartX) / dpf(10f)).toInt()
+                            val target = (spaceDragStartCursor + steps).coerceIn(extracted.startOffset, extracted.startOffset + (extracted.text?.length ?: 0))
+                            if (target != spaceDragLastCursor && currentInputConnection?.setSelection(target, target) == true) {
+                                spaceDragLastCursor = target
+                                spaceDragMoved = true
+                            }
+                        }
+                        return true
+                    }
                     if (panelOpen()) {
                         val cell = cellAt(event.x, event.y)
                         if (cell !== pressed) {
@@ -2444,10 +2466,12 @@ class DroidImeService : InputMethodService() {
                     val cell = pressed
                     pressed = null
                     invalidate()
-                    if (cell != null && !longPressFired && !cell.isDelete &&
+                    if (cell != null && !longPressFired && !spaceDragMoved && !cell.isDelete &&
                         cellAt(event.x, event.y) === cell) {
                         cell.action()
                     }
+                    spaceDragStartCursor = -1
+                    spaceDragMoved = false
                     if (wasRepeating) post { afterTextChanged() }
                     longPressFired = false
                     return true
@@ -2455,6 +2479,8 @@ class DroidImeService : InputMethodService() {
                 MotionEvent.ACTION_CANCEL -> {
                     glideActive = false
                     glideStartCell = null
+                    spaceDragStartCursor = -1
+                    spaceDragMoved = false
                     glideX.clear()
                     glideY.clear()
                     cancelPendingLongPress()
