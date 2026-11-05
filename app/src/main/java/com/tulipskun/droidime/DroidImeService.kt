@@ -145,6 +145,8 @@ class DroidImeService : InputMethodService() {
     )
 
     private var suggestions: List<Suggestion> = emptyList()
+    // Gboard's left strip button swaps the three suggestion slots for the tool icons.
+    private var toolbarOpen = false
     @Volatile private var dictEn: Dictionary? = null
     @Volatile private var dictTh: Dictionary? = null
 
@@ -301,6 +303,7 @@ class DroidImeService : InputMethodService() {
             language = previousLanguage
         }
         if (!restarting) {
+            toolbarOpen = false
             fieldKind = fieldKindOf(info)
             symbols = false
             symbolPage = 0
@@ -413,9 +416,15 @@ class DroidImeService : InputMethodService() {
     private fun updateSuggestions() {
         val next = computeSuggestions()
         if (next != suggestions) {
+            if (next.isNotEmpty()) toolbarOpen = false
             suggestions = next
             keyboardView?.rebuild()
         }
+    }
+
+    private fun toggleToolbar() {
+        toolbarOpen = !toolbarOpen
+        keyboardView?.rebuild()
     }
 
     private fun isThai(c: Char) = c in '\u0E01'..'\u0E5B'
@@ -475,32 +484,34 @@ class DroidImeService : InputMethodService() {
     }
 
     // Thai has no spaces, so try the longest trailing run of letters first and fall back to
-    // shorter endings until three different words are found.
+    // shorter endings (down to a single consonant, so suggestions start with the first
+    // character typed). The word as typed takes the first slot, like Gboard.
     private fun thaiSuggestions(before: String): List<Suggestion> {
         val dict = dictTh ?: return emptyList()
         var start = before.length
         while (start > 0 && isThai(before[start - 1]) && before.length - start < 12) start--
         val run = before.substring(start)
-        val out = ArrayList<Suggestion>()
-        // The word being typed comes first, as in Gboard: the longest ending that is a word.
-        for (k in run.length downTo 2) {
+        val completions = ArrayList<Suggestion>()
+        var typedLen = 0
+        for (k in run.length downTo 1) {
             val suffix = run.substring(run.length - k)
             if (suffix[0] in THAI_NON_LEADING) continue
-            if (dict.indexOf(suffix) >= 0) {
-                out.add(Suggestion(suffix, k, ""))
-                break
-            }
-        }
-        for (k in run.length downTo 2) {
-            val suffix = run.substring(run.length - k)
-            if (suffix[0] in THAI_NON_LEADING) continue
+            if (typedLen == 0 && dict.indexOf(suffix) >= 0) typedLen = k
             for (index in dict.complete(suffix, 3)) {
                 val word = dict.words[index]
-                if (out.none { it.text == word }) out.add(Suggestion(word, k, ""))
-                if (out.size == 3) return out
+                if (completions.none { it.text == word }) completions.add(Suggestion(word, k, ""))
             }
+            if (completions.size >= 2 && typedLen > 0) break
         }
-        return if (out.size > 1) out else emptyList()
+        if (typedLen == 0 && completions.isNotEmpty()) typedLen = completions[0].replaceLen
+        if (typedLen == 0) return emptyList()
+        val out = ArrayList<Suggestion>()
+        out.add(Suggestion(run.substring(run.length - typedLen), typedLen, ""))
+        for (c in completions) {
+            if (out.size == 3) break
+            out.add(c)
+        }
+        return out
     }
 
     private fun applySuggestion(suggestion: Suggestion) {
@@ -838,51 +849,69 @@ class DroidImeService : InputMethodService() {
             return built
         }
 
-        // Top strip: word suggestions while typing a word, otherwise the tool icons.
+        // Top strip, as in Gboard: the left (grid) and right (cursor) buttons are always there at
+        // fixed positions; between them sit three suggestion slots (blank when there is nothing
+        // to suggest) or, once the grid button is tapped, the tool icons.
         private fun stripCells(): List<Cell> {
-            if (suggestions.isNotEmpty()) {
-                return suggestions.map { s ->
-                    Cell(s.text, KeyStyle.SUGGESTION, null, action = { applySuggestion(s) })
-                }
-            }
             fun tool(icon: ToolIcon, name: String, action: () -> Unit) =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = action)
-            return listOf(
-                tool(ToolIcon.GRID, "Choose keyboard") { showKeyboardPicker() },
-                tool(ToolIcon.UNDO, "Undo") { sendCtrl(KeyEvent.KEYCODE_Z) },
-                tool(ToolIcon.TRANSLATE, "Switch language") { switchLanguage() },
-                tool(ToolIcon.CLIPBOARD, "Paste") { pasteClipboard() },
-                tool(ToolIcon.SETTINGS, "Keyboard settings") { openSettings() },
+            val middle: List<Cell> = if (toolbarOpen) {
+                listOf(
+                    tool(ToolIcon.UNDO, "Undo") { sendCtrl(KeyEvent.KEYCODE_Z) },
+                    tool(ToolIcon.TRANSLATE, "Switch language") { switchLanguage() },
+                    tool(ToolIcon.CLIPBOARD, "Paste") { pasteClipboard() },
+                    tool(ToolIcon.SETTINGS, "Keyboard settings") { openSettings() }
+                )
+            } else {
+                List(3) { i ->
+                    val s = suggestions.getOrNull(i)
+                    if (s != null) {
+                        Cell(s.text, KeyStyle.SUGGESTION, null, action = { applySuggestion(s) })
+                    } else {
+                        Cell("", KeyStyle.SUGGESTION, null, action = {})
+                    }
+                }
+            }
+            return listOf(tool(ToolIcon.GRID, "Tools") { toggleToolbar() }) + middle +
                 tool(ToolIcon.SELECT, "Select all") { selectAllText() }
-            )
         }
 
-        // Suggestions share the width equally; tool icons sit at Gboard's measured positions
-        // (centres at 6.7% + n * 17.3% of the width) with full-height touch columns.
+        // Positions measured from Gboard (1080px wide): button centres at 6.6% and 93.2%, the three
+        // slots span 8.6%..90.8% (dividers at 36.0% and 63.4%); tool icons keep 17.3% spacing.
         private fun placeStrip(strip: List<Cell>, out: MutableList<Cell>) {
-            if (strip.isEmpty()) return
+            if (strip.size < 3) return
             val bandH = dpf(STRIP_BAND_DP)
             val centerY = bandH / 2f
             val w = width.toFloat()
-            if (strip[0].style == KeyStyle.SUGGESTION) {
-                val slot = w / strip.size
-                strip.forEachIndexed { i, cell ->
-                    cell.rect.set(slot * i, 0f, slot * (i + 1), bandH)
-                    cell.touchRect.set(cell.rect)
+            val half = dpf(12f)
+            val first = strip.first()
+            val last = strip.last()
+            val middle = strip.subList(1, strip.size - 1)
+            val toolMode = middle[0].style == KeyStyle.TOOLBAR
+            val pitch = w * 0.1731f
+            val innerLeft = if (toolMode) w * 0.0667f + pitch * 0.5f else w * 0.0861f
+            val innerRight = if (toolMode) w * 0.0667f + pitch * (middle.size + 0.5f) else w * 0.9083f
+            first.rect.set(w * 0.0667f - half, centerY - half, w * 0.0667f + half, centerY + half)
+            first.touchRect.set(0f, 0f, innerLeft, bandH)
+            last.rect.set(w * 0.9317f - half, centerY - half, w * 0.9317f + half, centerY + half)
+            last.touchRect.set(innerRight, 0f, w, bandH)
+            out.add(first)
+            if (toolMode) {
+                middle.forEachIndexed { i, cell ->
+                    val cx = w * 0.0667f + pitch * (i + 1)
+                    cell.rect.set(cx - half, centerY - half, cx + half, centerY + half)
+                    cell.touchRect.set(cx - pitch / 2f, 0f, cx + pitch / 2f, bandH)
                     out.add(cell)
                 }
             } else {
-                val half = dpf(12f)
-                val slot = w * 0.1731f
-                strip.forEachIndexed { i, cell ->
-                    val cx = w * (0.0667f + 0.1731f * i)
-                    cell.rect.set(cx - half, centerY - half, cx + half, centerY + half)
-                    val left = if (i == 0) 0f else cx - slot / 2f
-                    val right = if (i == strip.lastIndex) w else cx + slot / 2f
-                    cell.touchRect.set(left, 0f, right, bandH)
+                val slot = (innerRight - innerLeft) / middle.size
+                middle.forEachIndexed { i, cell ->
+                    cell.rect.set(innerLeft + slot * i, 0f, innerLeft + slot * (i + 1), bandH)
+                    cell.touchRect.set(cell.rect)
                     out.add(cell)
                 }
             }
+            out.add(last)
         }
 
         private fun letterCell(key: String): Cell {
@@ -1235,7 +1264,8 @@ class DroidImeService : InputMethodService() {
                 shape.cornerRadius = cornerRadius
                 shape.draw(canvas)
             }
-            if (cell.rect.left > dpf(2f)) {
+            // Dividers sit between slots only (Gboard has none at the strip's left edge).
+            if (cell.rect.left > width * 0.1f) {
                 iconStroke.color = colors.hint
                 iconStroke.strokeWidth = dpf(1f)
                 canvas.drawLine(
