@@ -1440,7 +1440,6 @@ class DroidImeService : InputMethodService() {
         private var glideStartCell: Cell? = null
         private var glideActive = false
         private var glideLength = 0f
-        private val glideBins = linkedSetOf<String>()
         private val glideX = ArrayList<Float>()
         private val glideY = ArrayList<Float>()
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -2357,6 +2356,7 @@ class DroidImeService : InputMethodService() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     val cell = cellAt(event.x, event.y)
+                    if (!panelOpen()) recordKeyTouch(event.x, event.y, width, height, cell)
                     pressed = cell
                     longPressFired = false
                     spaceDragMoved = false
@@ -2372,7 +2372,6 @@ class DroidImeService : InputMethodService() {
                     glideActive = false
                     glideStartCell = null
                     glideLength = 0f
-                    glideBins.clear()
                     glideX.clear()
                     glideY.clear()
                     if (cell != null && panelOpen()) {
@@ -2476,7 +2475,7 @@ class DroidImeService : InputMethodService() {
                         addGlidePoint(event.x, event.y)
                         val xs = glideX.toFloatArray()
                         val ys = glideY.toFloatArray()
-                        lastGlidePathBins = glideBins.toList()
+                        recordGlidePath(glideX.indices.map { glideX[it] to glideY[it] }, width, height, false)
                         glideActive = false
                         glideStartCell = null
                         glideX.clear()
@@ -2513,7 +2512,6 @@ class DroidImeService : InputMethodService() {
                     spaceDragMoved = false
                     glideX.clear()
                     glideY.clear()
-                    glideBins.clear()
                     cancelPendingLongPress()
                     stopDeleteRepeat()
                     pressed = null
@@ -2531,11 +2529,7 @@ class DroidImeService : InputMethodService() {
             }
             glideX.add(x)
             glideY.add(y)
-            if (width > 0 && height > 0) {
-                val column = (x / width * 10f).toInt().coerceIn(0, 9)
-                val row = (y / height * 6f).toInt().coerceIn(0, 5)
-                glideBins.add("$row:$column")
-            }
+            // Exact normalized pointer coordinates are saved when the glide ends.
         }
 
         private fun isGlideLetter(ch: Char): Boolean =
