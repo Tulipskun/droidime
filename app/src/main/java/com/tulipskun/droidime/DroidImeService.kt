@@ -22,6 +22,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.text.InputType
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SoundEffectConstants
 import android.view.View
@@ -40,13 +41,47 @@ class DroidImeService : InputMethodService() {
 
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
-    private enum class KeyStyle { NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR }
+    private enum class KeyStyle { NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION }
 
     private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
 
     // Vector icons drawn on keys instead of font glyphs, so they look the same on every device
     // (the globe emoji, for one, renders as a coloured picture on Android).
     private enum class KeyGlyph { SHIFT, SHIFT_ON, CAPS, DELETE, ENTER, GLOBE, NUMBER_PAD }
+
+    // One tappable word suggestion: replace the last `replaceLen` characters with `text + append`.
+    private data class Suggestion(val text: String, val replaceLen: Int, val append: String)
+
+    // Words sorted for binary-search prefix lookup, with a frequency per word.
+    private class Dictionary(val words: Array<String>, val freqs: IntArray) {
+        private fun lowerBound(prefix: String): Int {
+            var lo = 0
+            var hi = words.size
+            while (lo < hi) {
+                val mid = (lo + hi) ushr 1
+                if (words[mid] < prefix) lo = mid + 1 else hi = mid
+            }
+            return lo
+        }
+
+        // Indices of the `limit` most frequent words that start with `prefix` and are longer.
+        fun complete(prefix: String, limit: Int): List<Int> {
+            val best = ArrayList<Int>()
+            var i = lowerBound(prefix)
+            while (i < words.size && words[i].startsWith(prefix)) {
+                if (words[i].length > prefix.length) {
+                    var pos = best.size
+                    while (pos > 0 && freqs[best[pos - 1]] < freqs[i]) pos--
+                    if (pos < limit) {
+                        best.add(pos, i)
+                        if (best.size > limit) best.removeAt(limit)
+                    }
+                }
+                i++
+            }
+            return best
+        }
+    }
 
     private class Palette(
         val background: Int,
@@ -81,6 +116,10 @@ class DroidImeService : InputMethodService() {
         enterText = Color.rgb(227, 227, 227),
         hint = Color.rgb(199, 199, 199)
     )
+
+    private var suggestions: List<Suggestion> = emptyList()
+    @Volatile private var dictEn: Dictionary? = null
+    @Volatile private var dictTh: Dictionary? = null
 
     private var palette = lightPalette
     private var darkTheme = false
@@ -164,6 +203,7 @@ class DroidImeService : InputMethodService() {
             settingsHandler.post {
                 loadSettings()
                 refreshTheme()
+                suggestions = computeSuggestions()
                 keyboardView?.requestLayout()
                 keyboardView?.rebuild()
             }
@@ -173,6 +213,26 @@ class DroidImeService : InputMethodService() {
     override fun onCreate() {
         super.onCreate()
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
+        Thread {
+            dictEn = loadDictionary("words_en.txt")
+            dictTh = loadDictionary("words_th.txt")
+            settingsHandler.post { updateSuggestions() }
+        }.start()
+    }
+
+    // Assets are "word<TAB>frequency" lines; sort by word so prefixes can be binary-searched.
+    private fun loadDictionary(name: String): Dictionary? = try {
+        val entries = ArrayList<Pair<String, Int>>()
+        assets.open(name).bufferedReader(Charsets.UTF_8).useLines { lines ->
+            for (line in lines) {
+                val tab = line.indexOf('\t')
+                if (tab > 0) entries.add(line.substring(0, tab) to (line.substring(tab + 1).toIntOrNull() ?: 1))
+            }
+        }
+        entries.sortBy { it.first }
+        Dictionary(Array(entries.size) { entries[it].first }, IntArray(entries.size) { entries[it].second })
+    } catch (error: Exception) {
+        null
     }
 
     @Suppress("DEPRECATION")
@@ -269,9 +329,9 @@ class DroidImeService : InputMethodService() {
         val target = view ?: return
         val params = target.layoutParams ?: ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(height)
+            dp(height + STRIP_EXTRA_DP)
         )
-        params.height = dp(height)
+        params.height = dp(height + STRIP_EXTRA_DP)
         target.layoutParams = params
     }
 
@@ -311,7 +371,112 @@ class DroidImeService : InputMethodService() {
 
     private fun renderKeyboard() {
         refreshTheme()
+        suggestions = computeSuggestions()
         keyboardView?.rebuild()
+    }
+
+    override fun onUpdateSelection(
+        oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
+        candidatesStart: Int, candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        updateSuggestions()
+    }
+
+    private fun updateSuggestions() {
+        val next = computeSuggestions()
+        if (next != suggestions) {
+            suggestions = next
+            keyboardView?.rebuild()
+        }
+    }
+
+    private fun isThai(c: Char) = c in '\u0E01'..'\u0E5B'
+
+    // Suggestions follow the characters before the cursor, whichever keyboard language is shown.
+    private fun computeSuggestions(): List<Suggestion> {
+        if (!preferences.getBoolean("suggestions", true)) return emptyList()
+        if (symbols || numberPad || fieldKind != FieldKind.TEXT) return emptyList()
+        val type = currentInputEditorInfo?.inputType ?: return emptyList()
+        if ((type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return emptyList()
+        val connection = currentInputConnection ?: return emptyList()
+        val after = connection.getTextAfterCursor(1, 0)
+        if (!after.isNullOrEmpty() && after[0].isLetterOrDigit()) return emptyList()
+        val before = connection.getTextBeforeCursor(24, 0)?.toString() ?: return emptyList()
+        if (before.isEmpty()) return emptyList()
+        return if (isThai(before.last())) thaiSuggestions(before) else englishSuggestions(before)
+    }
+
+    private fun englishSuggestions(before: String): List<Suggestion> {
+        val dict = dictEn ?: return emptyList()
+        var start = before.length
+        while (start > 0 && (before[start - 1] in 'a'..'z' || before[start - 1] in 'A'..'Z' || before[start - 1] == '\'')) start--
+        val typed = before.substring(start)
+        if (typed.isEmpty() || typed.length > 20) return emptyList()
+        val found = dict.complete(typed.lowercase(), if (typed.length >= 2) 2 else 3)
+        if (found.isEmpty()) return emptyList()
+        val allCaps = typed.length > 1 && typed.all { it.isUpperCase() }
+        val capital = typed[0].isUpperCase()
+        val out = ArrayList<Suggestion>()
+        // The word as typed stays available as the first choice, like Gboard.
+        if (typed.length >= 2) out.add(Suggestion(typed, typed.length, " "))
+        for (index in found) {
+            val word = dict.words[index]
+            val shown = when {
+                allCaps -> word.uppercase()
+                capital -> word.replaceFirstChar { it.uppercase() }
+                else -> word
+            }
+            out.add(Suggestion(shown, typed.length, " "))
+        }
+        return out
+    }
+
+    // Thai has no spaces, so try the longest trailing run of letters first and fall back to
+    // shorter endings until three different words are found.
+    private fun thaiSuggestions(before: String): List<Suggestion> {
+        val dict = dictTh ?: return emptyList()
+        var start = before.length
+        while (start > 0 && isThai(before[start - 1]) && before.length - start < 12) start--
+        val run = before.substring(start)
+        val out = ArrayList<Suggestion>()
+        for (k in run.length downTo 2) {
+            val suffix = run.substring(run.length - k)
+            if (suffix[0] in THAI_NON_LEADING) continue
+            for (index in dict.complete(suffix, 3)) {
+                val word = dict.words[index]
+                if (out.none { it.text == word }) out.add(Suggestion(word, k, ""))
+                if (out.size == 3) return out
+            }
+        }
+        return out
+    }
+
+    private fun applySuggestion(suggestion: Suggestion) {
+        val connection = currentInputConnection ?: return
+        connection.beginBatchEdit()
+        connection.deleteSurroundingText(suggestion.replaceLen, 0)
+        connection.commitText(suggestion.text + suggestion.append, 1)
+        connection.endBatchEdit()
+        lastSpaceTap = 0L
+        afterTextChanged()
+    }
+
+    private fun sendCtrl(keyCode: Int) {
+        val connection = currentInputConnection ?: return
+        val now = SystemClock.uptimeMillis()
+        connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, KeyEvent.META_CTRL_ON))
+        connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, KeyEvent.META_CTRL_ON))
+        afterTextChanged()
+    }
+
+    private fun pasteClipboard() {
+        currentInputConnection?.performContextMenuAction(android.R.id.paste)
+        afterTextChanged()
+    }
+
+    private fun selectAllText() {
+        currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
     }
 
     @Suppress("DEPRECATION")
@@ -397,12 +562,15 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun afterTextChanged() {
-        if (symbols || numberPad || shiftLocked) return
-        val next = computeAutoShift()
-        if (next != shifted) {
-            shifted = next
-            renderKeyboard()
+        if (!(symbols || numberPad || shiftLocked)) {
+            val next = computeAutoShift()
+            if (next != shifted) {
+                shifted = next
+                renderKeyboard()
+                return
+            }
         }
+        updateSuggestions()
     }
 
     private fun typeText(value: String) {
@@ -557,7 +725,7 @@ class DroidImeService : InputMethodService() {
         // whenever the IME measures this view with anything other than an exact size.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val w = MeasureSpec.getSize(widthMeasureSpec)
-            val desired = dp(preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360))
+            val desired = dp(preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360) + STRIP_EXTRA_DP)
             val h = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
                 MeasureSpec.getSize(heightMeasureSpec)
             } else {
@@ -616,21 +784,54 @@ class DroidImeService : InputMethodService() {
                 built.add(slots)
             }
             built.add(bottomRow())
-            // Toolbar row is intentionally skipped until the keyboard itself is finalised.
             return built
         }
 
-        private fun toolbarRow(): List<Pair<Float, Cell?>> {
-            fun tool(icon: ToolIcon, name: String, action: () -> Unit): Pair<Float, Cell?> =
-                1f to Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = action)
+        // Top strip: word suggestions while typing a word, otherwise the tool icons.
+        private fun stripCells(): List<Cell> {
+            if (suggestions.isNotEmpty()) {
+                return suggestions.map { s ->
+                    Cell(s.text, KeyStyle.SUGGESTION, null, action = { applySuggestion(s) })
+                }
+            }
+            fun tool(icon: ToolIcon, name: String, action: () -> Unit) =
+                Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = action)
             return listOf(
-                tool(ToolIcon.GRID, "Apps", {}),
-                tool(ToolIcon.UNDO, "Undo", {}),
-                tool(ToolIcon.TRANSLATE, "Translate", {}),
-                tool(ToolIcon.CLIPBOARD, "Clipboard", {}),
+                tool(ToolIcon.GRID, "Choose keyboard") { showKeyboardPicker() },
+                tool(ToolIcon.UNDO, "Undo") { sendCtrl(KeyEvent.KEYCODE_Z) },
+                tool(ToolIcon.TRANSLATE, "Switch language") { switchLanguage() },
+                tool(ToolIcon.CLIPBOARD, "Paste") { pasteClipboard() },
                 tool(ToolIcon.SETTINGS, "Keyboard settings") { openSettings() },
-                tool(ToolIcon.SELECT, "Select text", {})
+                tool(ToolIcon.SELECT, "Select all") { selectAllText() }
             )
+        }
+
+        // Suggestions share the width equally; tool icons sit at Gboard's measured positions
+        // (centres at 6.7% + n * 17.3% of the width) with full-height touch columns.
+        private fun placeStrip(strip: List<Cell>, out: MutableList<Cell>) {
+            if (strip.isEmpty()) return
+            val bandH = dpf(STRIP_BAND_DP)
+            val centerY = bandH / 2f
+            val w = width.toFloat()
+            if (strip[0].style == KeyStyle.SUGGESTION) {
+                val slot = w / strip.size
+                strip.forEachIndexed { i, cell ->
+                    cell.rect.set(slot * i, 0f, slot * (i + 1), bandH)
+                    cell.touchRect.set(cell.rect)
+                    out.add(cell)
+                }
+            } else {
+                val half = dpf(12f)
+                val slot = w * 0.1731f
+                strip.forEachIndexed { i, cell ->
+                    val cx = w * (0.0667f + 0.1731f * i)
+                    cell.rect.set(cx - half, centerY - half, cx + half, centerY + half)
+                    val left = if (i == 0) 0f else cx - slot / 2f
+                    val right = if (i == strip.lastIndex) w else cx + slot / 2f
+                    cell.touchRect.set(left, 0f, right, bandH)
+                    out.add(cell)
+                }
+            }
         }
 
         private fun letterCell(key: String): Cell {
@@ -772,7 +973,7 @@ class DroidImeService : InputMethodService() {
                 return
             }
             val padX = dpf(6.7f)
-            val padTop = dpf(4f)
+            val padTop = dpf(STRIP_TOP_DP)
             val padBottom = dpf(8f) + navigationInset
             val availW = (width - padX * 2f).coerceAtLeast(1f)
             val availH = (height - padTop - padBottom).coerceAtLeast(1f)
@@ -783,6 +984,7 @@ class DroidImeService : InputMethodService() {
             val scale = availH / (refHeights.sum() + refGap * contentRows)
             val gap = refGap * scale
             val lastRow = rows.lastIndex
+            placeStrip(stripCells(), flat)
             var nextTop = padTop
             rows.forEachIndexed { index, row ->
                 val top = nextTop
@@ -790,7 +992,7 @@ class DroidImeService : InputMethodService() {
                 nextTop = bottom + gap
                 // Vertical touch band reaches to the gap midpoint so rows tile with no dead strip;
                 // the first and last bands extend to the view edges.
-                val bandTop = if (index == 0) 0f else top - gap / 2f
+                val bandTop = if (index == 0) dpf(STRIP_BAND_DP) else top - gap / 2f
                 val bandBottom = if (index == lastRow) height.toFloat() else bottom + gap / 2f
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat()
                 if (totalWeight <= 0f) return@forEachIndexed
@@ -824,6 +1026,10 @@ class DroidImeService : InputMethodService() {
                 drawToolbarIcon(canvas, cell, colors)
                 return
             }
+            if (cell.style == KeyStyle.SUGGESTION) {
+                drawSuggestion(canvas, cell, colors)
+                return
+            }
             shape.setColor(
                 if (cell === pressed) colors.active else when (cell.style) {
                     KeyStyle.NORMAL -> colors.key
@@ -831,7 +1037,7 @@ class DroidImeService : InputMethodService() {
                     KeyStyle.ACTIVE -> colors.active
                     KeyStyle.SPACE -> colors.key
                     KeyStyle.ENTER -> colors.enter
-                    KeyStyle.TOOLBAR -> colors.background
+                    KeyStyle.TOOLBAR, KeyStyle.SUGGESTION -> colors.background
                 }
             )
             shape.setBounds(
@@ -968,6 +1174,39 @@ class DroidImeService : InputMethodService() {
             }
         }
 
+        private fun drawSuggestion(canvas: Canvas, cell: Cell, colors: Palette) {
+            if (cell === pressed) {
+                shape.setColor(colors.special)
+                shape.setBounds(
+                    cell.rect.left.toInt(), (cell.rect.top + dpf(3f)).toInt(),
+                    cell.rect.right.toInt(), (cell.rect.bottom - dpf(3f)).toInt()
+                )
+                shape.cornerRadius = cornerRadius
+                shape.draw(canvas)
+            }
+            if (cell.rect.left > dpf(2f)) {
+                iconStroke.color = colors.hint
+                iconStroke.strokeWidth = dpf(1f)
+                canvas.drawLine(
+                    cell.rect.left, cell.rect.centerY() - dpf(10f),
+                    cell.rect.left, cell.rect.centerY() + dpf(10f), iconStroke
+                )
+            }
+            textPaint.color = colors.text
+            textPaint.typeface = Typeface.DEFAULT
+            val maxW = cell.rect.width() - dpf(16f)
+            var size = dpf(17f)
+            textPaint.textSize = size
+            while (textPaint.measureText(cell.label) > maxW && size > dpf(12f)) {
+                size -= dpf(1f)
+                textPaint.textSize = size
+            }
+            var text = cell.label
+            while (text.length > 1 && textPaint.measureText(text) > maxW) text = text.dropLast(1)
+            val m = textPaint.fontMetrics
+            canvas.drawText(text, cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
+        }
+
         private fun drawEmojiKey(canvas: Canvas, cell: Cell, colors: Palette) {
             val cx = cell.rect.centerX()
             // Gboard's face is 28px (10dp) across, centred 13dp below the key top.
@@ -995,6 +1234,10 @@ class DroidImeService : InputMethodService() {
             val cx = cell.rect.centerX()
             val cy = cell.rect.centerY()
             val s = minOf(cell.rect.width(), cell.rect.height()) * 0.5f
+            if (cell.icon == ToolIcon.SELECT) {
+                iconFill.color = colors.special
+                canvas.drawCircle(cx, cy, dpf(15.7f), iconFill)
+            }
             iconStroke.color = color
             iconStroke.strokeWidth = (s * 0.16f).coerceAtLeast(1.6f * resources.displayMetrics.density)
             iconFill.color = color
@@ -1223,8 +1466,17 @@ class DroidImeService : InputMethodService() {
         private const val REF_BOTTOM_ROW_H = 124f
         private const val KEY_INSET = 0.067f
 
+        // Top strip (tool icons / suggestions): 40dp band, keys start at 49dp, so the view is
+        // 45dp taller than the configured key-area height.
+        private const val STRIP_BAND_DP = 40f
+        private const val STRIP_TOP_DP = 49f
+        private const val STRIP_EXTRA_DP = 45
+
+        // Thai characters a word cannot start with (vowel and tone marks, ะ า ำ ๅ ๆ ฯ).
+        private const val THAI_NON_LEADING = "ะาำัิีึืุู็่้๊๋์ํๅๆฯฺ"
+
         private val SETTINGS_KEYS = setOf(
-            "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints"
+            "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints", "suggestions"
         )
 
         private const val DELETE_INITIAL_DELAY_MS = 400L
