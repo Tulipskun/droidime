@@ -44,7 +44,15 @@ class DroidImeService : InputMethodService() {
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
     private enum class KeyStyle {
-        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, SECTION
+        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY
+    }
+    private enum class EmojiCategory(val title: String, val items: List<String>) {
+        FACES("Faces", listOf("😀","😃","😄","😁","😆","😅","😂","🤣","😊","😉","😍","🥰","😘","😋","😜","🤪","🤔","😎","🥳","🥺","😭","😱","🤖","👻","💩","🎃")),
+        PEOPLE("People", listOf("👋","👌","✌️","🤞","🤟","🤘","👍","👎","👏","🙌","🙏","💪","👀","👄","👶","🧒","👦","👧","🧑","👨","👩","🤦","🤷","🧑‍💻")),
+        NATURE("Nature", listOf("🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🦋","🐝","🐢","🐍","🦖","🐙","🦀","🐠","🐬","🌸","🌹","🌻","🌈","☀️","🌙")),
+        FOOD("Food", listOf("🍏","🍎","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍒","🍑","🥭","🍍","🥝","🍅","🥑","🥦","🥕","🍞","🧀","🍳","🍔","🍟","🍕","🌮","🍜","🍣","🍱","🍦","🍰","🎂","🍩","☕","🧋")),
+        TRAVEL("Travel", listOf("🚗","🚕","🚌","🏎️","🚑","🚒","🚲","🛴","🚦","✈️","🚀","🛸","🌍","🗺️","🏔️","🏕️","🏖️","🏠","🏢","🏰","🗼","🗽")),
+        SYMBOLS("Symbols", listOf("❤️","🧡","💛","💚","💙","💜","🖤","🤍","💔","💕","💞","💓","💗","💖","💘","💝","☮️","✝️","☪️","🕉️","☯️","❌","⭕","💯","❗","❓","⚠️","♻️","✅","➡️","⬅️","⬆️","⬇️"))
     }
 
     private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
@@ -592,7 +600,7 @@ class DroidImeService : InputMethodService() {
     // Pressing a key while the panel is open acts on the clip, so the strip is not involved.
     private fun computeSuggestions(): List<Suggestion> {
         if (!preferences.getBoolean("suggestions", true)) return emptyList()
-        if (clipOpen()) return emptyList()
+        if (panelOpen()) return emptyList()
         if (symbols || numberPad || fieldKind != FieldKind.TEXT) return emptyList()
         val type = currentInputEditorInfo?.inputType ?: return emptyList()
         if ((type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return emptyList()
@@ -739,13 +747,16 @@ class DroidImeService : InputMethodService() {
     // ---- Glide typing -------------------------------------------------------------------------
 
     private fun clipOpen(): Boolean = preferences.getBoolean("clipboard", true) && clipPanelVisible
+    private fun panelOpen(): Boolean = clipOpen() || emojiPanelVisible
 
     // The panel replaces the suggestion strip and the letter rows, so the keys that are drawn
     // while it is open are not glide letters.
     private var clipPanelVisible = false
+    private var emojiPanelVisible = false
+    private var emojiCategory = EmojiCategory.FACES
 
     private fun glideAllowed(): Boolean =
-        !clipOpen() && !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
+        !panelOpen() && !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
             ((if (language == Language.THAI) dictTh else dictEn) != null || userWords.isNotEmpty()) &&
             preferences.getBoolean("glide_typing", true)
 
@@ -1008,6 +1019,7 @@ class DroidImeService : InputMethodService() {
     // ---- Clipboard panel -----------------------------------------------------------------------
 
     private fun openClipboardPanel() {
+        emojiPanelVisible = false
         clipSelection = null
         clipMenuId = null
         clipPanelVisible = true
@@ -1150,7 +1162,13 @@ class DroidImeService : InputMethodService() {
 
     // Toolbar emoji key: tap types a comma, long-press opens the picker (not built yet).
     private fun showEmoji() {
-        android.widget.Toast.makeText(this, "Emoji picker coming soon", android.widget.Toast.LENGTH_SHORT).show()
+        clipPanelVisible = false; emojiPanelVisible = true; emojiCategory = EmojiCategory.FACES; renderKeyboard()
+    }
+    private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
+    private fun insertEmoji(emoji: String) {
+        currentInputConnection?.commitText(emoji, 1)
+        closeEmojiPanel()
+        afterTextChanged()
     }
 
     // English capitalises after sentence ends when the field asks for it.
@@ -1300,7 +1318,9 @@ class DroidImeService : InputMethodService() {
         companion object {
             fun describe(label: String, style: KeyStyle): String = when {
                 style == KeyStyle.SPACE -> "Space"
-                style == KeyStyle.HEADER -> label
+                style == KeyStyle.HEADER, style == KeyStyle.HEADER_CLOSE -> label
+                style == KeyStyle.EMOJI -> "Emoji $label"
+                style == KeyStyle.EMOJI_CATEGORY -> "Emoji category $label"
                 style == KeyStyle.CLIP -> label.ifEmpty { "Empty clipboard slot" }
                 label == GLOBE -> "Switch language"
                 label == DELETE -> "Delete"
@@ -1412,6 +1432,7 @@ class DroidImeService : InputMethodService() {
 
         // Each row is a list of (weight, cell) slots; a null cell is an indent spacer.
         private fun buildRows(): List<List<Pair<Float, Cell?>>> {
+            if (emojiPanelVisible) return buildEmojiRows()
             if (clipOpen()) return buildClipRows()
             val numberRowEnglish = preferences.getBoolean("number_row_en", true)
             val numberRowThai = preferences.getBoolean("number_row_th", false)
@@ -1485,7 +1506,7 @@ class DroidImeService : InputMethodService() {
             val panel = clipsForPanel()
             val pinned = panel.filter { clip -> clip.pinned }
             val recent = panel.filter { clip -> !clip.pinned }
-            rows.add(listOf(1f to headerCell()))
+            rows.add(listOf(3f to headerCell(), 1f to closeClipboardCell()))
             if (panel.isEmpty()) {
                 rows.add(listOf(1f to emptyCell()))
                 return rows
@@ -1502,9 +1523,15 @@ class DroidImeService : InputMethodService() {
         }
 
         private fun headerCell(): Cell {
-            val label = if (clipEdit) "Done" else "Edit"
-            return Cell(label, KeyStyle.HEADER, null, action = { toggleClipEdit() })
+            val label = when { clipEdit && clipSelection != null -> "Delete"; clipEdit -> "Done"; else -> "Edit" }
+            return Cell(label, KeyStyle.HEADER, null, action = {
+                val selected = clipSelection
+                if (clipEdit && selected != null) deleteClip(selected) else toggleClipEdit()
+            })
         }
+        private fun closeClipboardCell(): Cell = Cell("Close", KeyStyle.HEADER_CLOSE, null, action = {
+            clipPanelVisible = false; clipEdit = false; clipSelection = null; clipMenuId = null; renderKeyboard()
+        })
 
         private fun sectionCell(name: String): Cell =
             Cell(name, KeyStyle.SECTION, null, action = {}, longAction = {})
@@ -1719,10 +1746,8 @@ class DroidImeService : InputMethodService() {
                 cells = flat
                 return
             }
-            if (clipOpen()) {
-                layoutClipRows(rows, flat)
-                return
-            }
+            if (emojiPanelVisible) { layoutEmojiRows(rows, flat); return }
+            if (panelOpen()) { layoutClipRows(rows, flat); return }
             val padX = dpf(6.7f)
             val padTop = dpf(STRIP_TOP_DP)
             val padBottom = dpf(8f) + navigationInset
@@ -1776,26 +1801,79 @@ class DroidImeService : InputMethodService() {
         private fun layoutClipRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             val padBottom = dpf(8f) + navigationInset
             val availH = (height - dpf(CLIP_PAD_TOP_DP) - padBottom).coerceAtLeast(1f)
-            val headerH = dpf(CLIP_HEADER_DP)
-            val gap = dpf(4f)
-            val bodyRows = rows.size - 1
-            val rowH = ((availH - headerH - gap * (rows.size - 1)) / bodyRows).coerceAtLeast(dpf(28f))
+            val headerH = dpf(CLIP_HEADER_DP); val gap = dpf(4f)
+            val bodyRows = (rows.size - 1).coerceAtLeast(1)
+            val rowH = ((availH - headerH - gap * (rows.size - 1)) / bodyRows).coerceAtLeast(dpf(20f))
             var top = dpf(CLIP_PAD_TOP_DP)
             rows.forEachIndexed { index, row ->
                 val h = if (index == 0) headerH else rowH
-                val bottom = top + h
-                row.forEach { (_, cell) ->
+                val bottom = (top + h).coerceAtMost((height - padBottom).coerceAtLeast(top + 1f))
+                val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
+                val leftEdge = dpf(8f); val usableWidth = (width - dpf(16f)).coerceAtLeast(1f)
+                var left = leftEdge
+                row.forEach { (weight, cell) ->
+                    val right = left + usableWidth * weight / totalWeight
                     if (cell != null) {
-                        cell.rect.set(dpf(8f), top, width - dpf(8f), bottom)
+                        cell.rect.set(left, top, right, bottom)
                         val bandTop = if (index == 0) 0f else top - gap / 2f
                         val bandBottom = if (index == rows.lastIndex) height.toFloat() else bottom + gap / 2f
-                        cell.touchRect.set(0f, bandTop, width.toFloat(), bandBottom)
-                        flat.add(cell)
+                        cell.touchRect.set(left, bandTop, right, bandBottom); flat.add(cell)
                     }
+                    left = right
                 }
                 top = bottom + gap
             }
             cells = flat
+        }
+
+        private fun buildEmojiRows(): List<List<Pair<Float, Cell?>>> {
+            val rows = mutableListOf<List<Pair<Float, Cell?>>>()
+            rows.add(listOf(3f to Cell("Emoji", KeyStyle.HEADER, null, action = {}),
+                1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() })))
+            rows.add(EmojiCategory.values().map { category ->
+                1f to Cell(category.title, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
+            })
+            emojiCategory.items.chunked(8).forEach { group ->
+                rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
+            }
+            return rows
+        }
+
+        private fun layoutEmojiRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
+            if (rows.size < 3) { cells = flat; return }
+            val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(1f)
+            val top = dpf(6f); val headerH = dpf(42f); val categoryH = dpf(42f); val gap = dpf(3f)
+            val gridTop = top + headerH + gap + categoryH + gap
+            val gridRows = (rows.size - 2).coerceAtLeast(1)
+            val rowH = ((bottom - gridTop) / gridRows).coerceAtLeast(dpf(26f))
+            rows.forEachIndexed { index, row ->
+                val y = when (index) { 0 -> top; 1 -> top + headerH + gap; else -> gridTop + (index - 2) * rowH }
+                val h = when (index) { 0 -> headerH; 1 -> categoryH; else -> rowH }
+                val y2 = (y + h).coerceAtMost(bottom)
+                val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
+                val usable = (width - dpf(8f)).coerceAtLeast(1f); var x = dpf(4f)
+                row.forEach { (weight, cell) ->
+                    val x2 = x + usable * weight / totalWeight
+                    if (cell != null) { cell.rect.set(x, y, x2, y2); cell.touchRect.set(x, if (index == 0) 0f else y, x2, y2); flat.add(cell) }
+                    x = x2
+                }
+            }
+            cells = flat
+        }
+
+        private fun drawEmojiPanelCell(canvas: Canvas, cell: Cell, colors: Palette) {
+            val selected = cell.style == KeyStyle.EMOJI_CATEGORY && cell.label == emojiCategory.title
+            shape.setColor(if (cell === pressed || selected) colors.active else colors.key)
+            shape.setBounds((cell.rect.left + dpf(2f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
+                (cell.rect.right - dpf(2f)).toInt(), (cell.rect.bottom - dpf(2f)).toInt())
+            shape.cornerRadius = if (cell.style == KeyStyle.EMOJI) dpf(8f) else dpf(12f); shape.draw(canvas)
+            textPaint.color = if (selected) colors.enterText else colors.text
+            textPaint.typeface = if (cell.style == KeyStyle.EMOJI_CATEGORY) mediumFace else Typeface.DEFAULT
+            textPaint.textSize = dpf(if (cell.style == KeyStyle.EMOJI) 25f else 10.5f)
+            textPaint.textAlign = Paint.Align.CENTER
+            val m = textPaint.fontMetrics
+            canvas.drawText(cell.label, cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
+            textPaint.typeface = Typeface.DEFAULT
         }
 
         private fun drawCell(canvas: Canvas, cell: Cell) {
@@ -1808,8 +1886,9 @@ class DroidImeService : InputMethodService() {
                 drawSuggestion(canvas, cell, colors)
                 return
             }
+            if (cell.style == KeyStyle.EMOJI || cell.style == KeyStyle.EMOJI_CATEGORY) { drawEmojiPanelCell(canvas, cell, colors); return }
             if (cell.style == KeyStyle.CLIP || cell.style == KeyStyle.HEADER ||
-                cell.style == KeyStyle.SECTION
+                cell.style == KeyStyle.HEADER_CLOSE || cell.style == KeyStyle.SECTION
             ) {
                 drawClipCell(canvas, cell, colors)
                 return
@@ -1822,7 +1901,7 @@ class DroidImeService : InputMethodService() {
                     KeyStyle.SPACE -> colors.key
                     KeyStyle.ENTER -> colors.enter
                     KeyStyle.TOOLBAR, KeyStyle.SUGGESTION, KeyStyle.CLIP, KeyStyle.HEADER,
-                    KeyStyle.SECTION -> colors.background
+                    KeyStyle.HEADER_CLOSE, KeyStyle.SECTION, KeyStyle.EMOJI, KeyStyle.EMOJI_CATEGORY -> colors.background
                 }
             )
             shape.setBounds(
@@ -2009,6 +2088,12 @@ class DroidImeService : InputMethodService() {
                     cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint
                 )
                 textPaint.textAlign = Paint.Align.CENTER
+                return
+            }
+            if (cell.style == KeyStyle.HEADER_CLOSE) {
+                textPaint.color = ink; textPaint.textSize = dpf(24f); textPaint.textAlign = Paint.Align.CENTER
+                val m = textPaint.fontMetrics
+                canvas.drawText("×", cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
                 return
             }
             if (cell.style == KeyStyle.HEADER) {
@@ -2204,11 +2289,11 @@ class DroidImeService : InputMethodService() {
                     glideLength = 0f
                     glideX.clear()
                     glideY.clear()
-                    if (cell != null && clipOpen()) {
+                    if (cell != null && panelOpen()) {
                         keyFeedback(this)
                         if (cell.style == KeyStyle.SECTION) return true
                         // The panel has no glide and no delete repeat; every row is a plain tap.
-                        val menuAction = clipMenuAction(cell, event.y)
+                        val menuAction = if (clipOpen()) clipMenuAction(cell, event.y) else null
                         val runnable = Runnable {
                             longPressFired = true
                             if (menuAction != null) menuAction() else cell.longAction?.invoke()
@@ -2241,7 +2326,7 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (clipOpen()) {
+                    if (panelOpen()) {
                         val cell = cellAt(event.x, event.y)
                         if (cell !== pressed) {
                             pressed = cell
@@ -2273,14 +2358,14 @@ class DroidImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (clipOpen()) {
+                    if (panelOpen()) {
                         val cell = pressed
                         pressed = null
                         invalidate()
                         if (cell != null && cell.style != KeyStyle.SECTION && !longPressFired &&
                             cellAt(event.x, event.y) === cell
                         ) {
-                            val menuAction = clipMenuAction(cell, event.y)
+                            val menuAction = if (clipOpen()) clipMenuAction(cell, event.y) else null
                             if (menuAction != null) menuAction() else cell.action()
                         }
                         longPressFired = false
