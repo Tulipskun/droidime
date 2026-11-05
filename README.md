@@ -7,7 +7,7 @@ Native Android keyboard with Thai (Kedmanee) and English layouts.
 - Thai and English layouts, switched with the 🌐 key. Long-press 🌐 to pick another keyboard.
 - Shift with caps lock (double-tap), plus automatic capitalization in English when the field asks for it.
 - Top strip like Gboard's: tool icons (keyboard picker, undo, switch language, paste, settings, select all) that turn into three word suggestions while you type, in Thai and English. The word as typed comes first, then the best completions and, in English, one-edit corrections ("teh" offers "the"). Tapping a suggestion completes the word.
-- Glide typing in English: slide a finger across the letters and lift to type the word with a space; the strip then offers the runner-up words.
+- Glide typing in Thai and English: slide a finger across the letters and lift to type the word (English adds a space); the strip then offers the runner-up words. Thai words also match without their vowel and tone marks.
 - Two pages of numbers and symbols.
 - Field-aware layouts: number and phone fields open on digits; email, URL and password fields use English, with `@` or `/` next to the space bar.
 - Enter key shows the field's action (Go, Search, Send, Next, Done).

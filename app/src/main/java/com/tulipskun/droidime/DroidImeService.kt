@@ -516,8 +516,9 @@ class DroidImeService : InputMethodService() {
     // ---- Glide typing -------------------------------------------------------------------------
 
     private fun glideAllowed(): Boolean =
-        language == Language.ENGLISH && !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
-            dictEn != null && preferences.getBoolean("glide_typing", true)
+        !symbols && !numberPad && fieldKind == FieldKind.TEXT &&
+            (if (language == Language.THAI) dictTh else dictEn) != null &&
+            preferences.getBoolean("glide_typing", true)
 
     private fun hypotf(dx: Float, dy: Float): Float = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
 
@@ -558,11 +559,13 @@ class DroidImeService : InputMethodService() {
 
     // Words whose key-to-key path best matches the finger's path: only words that start and end
     // near where the gesture did are tried, each path is resampled to the same number of points
-    // and compared, and word frequency breaks near-ties. Returns up to three words, best first.
+    // and compared, and word frequency breaks near-ties. Thai words are also tried without their
+    // vowel and tone marks, since those are easy to skip over while gliding. Returns up to three
+    // words, best first.
     private fun glideCandidates(
-        xs: FloatArray, ys: FloatArray, centers: Map<Char, FloatArray>, keyW: Float
+        xs: FloatArray, ys: FloatArray, centers: Map<Char, FloatArray>, keyW: Float, thai: Boolean
     ): List<String> {
-        val dict = dictEn ?: return emptyList()
+        val dict = (if (thai) dictTh else dictEn) ?: return emptyList()
         if (xs.size < 2 || centers.isEmpty() || keyW <= 0f) return emptyList()
         val n = 32
         val gesture = resample(xs, ys, n)
@@ -583,49 +586,72 @@ class DroidImeService : InputMethodService() {
         val weightSum = pointWeights.sum()
         val wx = FloatArray(64)
         val wy = FloatArray(64)
-        val scored = ArrayList<Pair<Float, String>>()
-        for (i in dict.words.indices) {
-            val word = dict.words[i]
-            if (word.length < 2 || word.length > 40) continue
-            if (word[0] !in firstKeys || word[word.length - 1] !in lastKeys) continue
+        // Mean distance (in key widths) between the gesture and the key path spelling `seq`,
+        // or -1 when the spelling cannot be the gesture.
+        fun variantDistance(seq: String): Float {
+            if (seq.length < 2 || seq.length > 40) return -1f
+            if (seq[0] !in firstKeys || seq[seq.length - 1] !in lastKeys) return -1f
             var m = 0
-            var ok = true
-            for (ch in word) {
-                val c = centers[ch]
-                if (c == null) {
-                    ok = false
-                    break
-                }
+            for (ch in seq) {
+                val c = centers[ch] ?: return -1f
                 if (m > 0 && wx[m - 1] == c[0] && wy[m - 1] == c[1]) continue
                 wx[m] = c[0]
                 wy[m] = c[1]
                 m++
             }
-            if (!ok || m < 2) continue
+            if (m < 2) return -1f
             val px = wx.copyOf(m)
             val py = wy.copyOf(m)
             val idealLen = pathLength(px, py)
-            if (idealLen < gestureLen * 0.4f || idealLen > gestureLen * 2.5f) continue
+            if (idealLen < gestureLen * 0.4f || idealLen > gestureLen * 2.5f) return -1f
             val ideal = resample(px, py, n)
             var sum = 0f
             for (k in 0 until n) {
                 sum += pointWeights[k] * hypotf(ideal[2 * k] - gesture[2 * k], ideal[2 * k + 1] - gesture[2 * k + 1])
             }
             val distance = sum / weightSum / keyW
-            if (distance > 2f) continue
-            scored.add((distance - dict.freqs[i] / maxFreq.toFloat() * 0.8f) to word)
+            return if (distance > 2f) -1f else distance
+        }
+        val scored = ArrayList<Pair<Float, String>>()
+        for (i in dict.words.indices) {
+            val word = dict.words[i]
+            var best = variantDistance(word)
+            if (thai) {
+                val reduced = word.filterNot { it in THAI_MARKS }
+                if (reduced.length != word.length) {
+                    val d = variantDistance(reduced)
+                    if (d >= 0f && (best < 0f || d + 0.1f < best)) best = d + 0.1f
+                }
+            }
+            if (best < 0f) continue
+            val common = if (thai) {
+                (Math.log(1.0 + dict.freqs[i]) / Math.log(1.0 + maxFreq)).toFloat()
+            } else {
+                dict.freqs[i] / maxFreq.toFloat()
+            }
+            scored.add((best - common * 0.8f) to word)
         }
         scored.sortBy { it.first }
         return scored.take(3).map { it.second }
     }
 
-    private fun commitGlide(words: List<String>) {
+    private fun commitGlide(words: List<String>, thai: Boolean) {
         val connection = currentInputConnection ?: return
         if (words.isEmpty()) return
         fun styled(word: String) = when {
             shiftLocked -> word.uppercase()
             shifted -> word.replaceFirstChar { it.uppercase() }
             else -> word
+        }
+        if (thai) {
+            // Thai has no spaces: the word goes in as is, and the runners-up replace it.
+            val word = words[0]
+            connection.commitText(word, 1)
+            glideCommitted = word
+            glideAlternatives = words.map { Suggestion(it, word.length, "") }
+            lastSpaceTap = 0L
+            afterTextChanged()
+            return
         }
         val shown = words.map { styled(it) }
         val previous = connection.getTextBeforeCursor(1, 0)?.toString()
@@ -1557,7 +1583,7 @@ class DroidImeService : InputMethodService() {
                     glideX.clear()
                     glideY.clear()
                     if (cell != null && glideAllowed() && cell.style == KeyStyle.NORMAL &&
-                        cell.label.length == 1 && cell.label[0].lowercaseChar() in 'a'..'z') {
+                        cell.label.length == 1 && isGlideLetter(cell.label[0])) {
                         glideStartCell = cell
                         glideX.add(event.x)
                         glideY.add(event.y)
@@ -1613,7 +1639,10 @@ class DroidImeService : InputMethodService() {
                         glideY.clear()
                         pressed = null
                         invalidate()
-                        commitGlide(glideCandidates(xs, ys, letterCenters(), letterKeyWidth()))
+                        commitGlide(
+                            glideCandidates(xs, ys, letterCenters(), letterKeyWidth(), language == Language.THAI),
+                            language == Language.THAI
+                        )
                         return true
                     }
                     glideStartCell = null
@@ -1655,12 +1684,25 @@ class DroidImeService : InputMethodService() {
             glideY.add(y)
         }
 
+        private fun isGlideLetter(ch: Char): Boolean =
+            if (language == Language.THAI) isThai(ch) else ch.lowercaseChar() in 'a'..'z'
+
+        // Key centres by character. On the Thai keyboard a key also stands for its shift-layer
+        // character, so words spelled with either layer can be matched whichever one is showing.
         private fun letterCenters(): Map<Char, FloatArray> {
             val map = HashMap<Char, FloatArray>()
+            val baseOf = thaiShift.entries.associate { it.value to it.key }
             for (cell in cells) {
-                if (cell.style == KeyStyle.NORMAL && cell.label.length == 1) {
+                if (cell.style != KeyStyle.NORMAL || cell.label.length != 1) continue
+                val center = floatArrayOf(cell.rect.centerX(), cell.rect.centerY())
+                if (language == Language.THAI) {
+                    val base = baseOf[cell.label] ?: cell.label
+                    if (!isThai(base[0])) continue
+                    map[base[0]] = center
+                    thaiShift[base]?.let { map[it[0]] = center }
+                } else {
                     val letter = cell.label[0].lowercaseChar()
-                    if (letter in 'a'..'z') map[letter] = floatArrayOf(cell.rect.centerX(), cell.rect.centerY())
+                    if (letter in 'a'..'z') map[letter] = center
                 }
             }
             return map
@@ -1668,7 +1710,7 @@ class DroidImeService : InputMethodService() {
 
         private fun letterKeyWidth(): Float {
             for (cell in cells) {
-                if (cell.style == KeyStyle.NORMAL && cell.label.length == 1 && cell.label[0].lowercaseChar() == 'q') {
+                if (cell.style == KeyStyle.NORMAL && cell.label.length == 1 && isGlideLetter(cell.label[0])) {
                     return cell.rect.width()
                 }
             }
@@ -1778,6 +1820,7 @@ class DroidImeService : InputMethodService() {
 
         // Thai characters a word cannot start with (vowel and tone marks, ะ า ำ ๅ ๆ ฯ).
         private const val EDIT_PENALTY = 5
+        private const val THAI_MARKS = "ัิีึืุู็่้๊๋์ํ"
         private const val THAI_NON_LEADING ="ะาำัิีึืุู็่้๊๋์ํๅๆฯฺ"
 
         private val SETTINGS_KEYS = setOf(

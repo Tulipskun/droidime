@@ -248,7 +248,7 @@ class MainActivity : Activity() {
         val typingCard = card()
         typingCard.addView(sectionTitle("Typing"))
         typingCard.addView(prefSwitch("Word suggestions (Thai and English)", "suggestions", true))
-        typingCard.addView(prefSwitch("Glide typing (English)", "glide_typing", true))
+        typingCard.addView(prefSwitch("Glide typing (Thai and English)", "glide_typing", true))
         typingCard.addView(prefSwitch("Auto-capitalize (English)", "auto_caps", true))
         typingCard.addView(prefSwitch("Double space inserts a period (English)", "double_space_period", true))
         typingCard.addView(prefSwitch("Show key hints (long-press to type)", "key_hints", true))
