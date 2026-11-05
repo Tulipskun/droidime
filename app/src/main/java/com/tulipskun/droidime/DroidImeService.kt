@@ -2104,7 +2104,7 @@ class DroidImeService : InputMethodService() {
                 val m = textPaint.fontMetrics
                 val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
                 textPaint.textAlign = Paint.Align.LEFT
-                canvas.drawText("Clipboard", cell.rect.left + dpf(14f), cy, textPaint)
+                canvas.drawText(if (emojiPanelVisible) "Emoji" else "Clipboard", cell.rect.left + dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.RIGHT
                 canvas.drawText(cell.label, cell.rect.right - dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.CENTER
@@ -2294,12 +2294,15 @@ class DroidImeService : InputMethodService() {
                         if (cell.style == KeyStyle.SECTION) return true
                         // The panel has no glide and no delete repeat; every row is a plain tap.
                         val menuAction = if (clipOpen()) clipMenuAction(cell, event.y) else null
-                        val runnable = Runnable {
-                            longPressFired = true
-                            if (menuAction != null) menuAction() else cell.longAction?.invoke()
+                        val longAction = menuAction ?: cell.longAction
+                        if (longAction != null) {
+                            val runnable = Runnable {
+                                longPressFired = true
+                                longAction.invoke()
+                            }
+                            pendingLongPress = runnable
+                            pressHandler.postDelayed(runnable, 400L)
                         }
-                        pendingLongPress = runnable
-                        pressHandler.postDelayed(runnable, 400L)
                         return true
                     }
                     if (cell != null && glideAllowed() && cell.style == KeyStyle.NORMAL &&
