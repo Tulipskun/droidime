@@ -1246,12 +1246,12 @@ class DroidImeService : InputMethodService() {
         if (lastGlidePathBins.isEmpty()) return
         val counts = linkedMapOf<String, Int>()
         preferences.getString(GLIDE_POSITION_STATS, "").orEmpty().lineSequence().forEach { line ->
-            val split = line.lastIndexOf('\\t')
+            val split = line.lastIndexOf('\t')
             if (split > 0) counts[line.substring(0, split)] = line.substring(split + 1).toIntOrNull() ?: 0
         }
         lastGlidePathBins.forEach { bin -> counts[bin] = (counts[bin] ?: 0) + 1 }
         preferences.edit().putString(GLIDE_POSITION_STATS,
-            counts.entries.joinToString("\\n") { "${it.key}\\t${it.value}" }).apply()
+            counts.entries.joinToString("\n") { "${it.key}\t${it.value}" }).apply()
         lastGlidePathBins = emptyList()
     }
 
