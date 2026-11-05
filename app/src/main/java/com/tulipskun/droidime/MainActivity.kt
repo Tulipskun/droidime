@@ -239,25 +239,25 @@ class MainActivity : Activity() {
         content.addView(typingCard, sectionParams())
 
         val learningCard = card()
-        learningCard.addView(sectionTitle("Typing improvement data"))
-        val correctionStats = preferences.getString("correction_stats", "").orEmpty()
-        val correctionSummary = correctionStats.lines().mapNotNull { line ->
-            val split = line.lastIndexOf('\t')
-            if (split > 0) line.substring(0, split) + ": " + line.substring(split + 1) else null
-        }.take(8).joinToString(" · ").ifEmpty { "No correction data yet" }
+        learningCard.addView(sectionTitle("Touch coordinate learning"))
+        val eventCount = preferences.getString("touch_history", "").orEmpty().lineSequence().count { it.isNotBlank() }
         learningCard.addView(TextView(this).apply {
-            text = "Frequently corrected keys: " + correctionSummary +
-                "\nGlide words deleted: " + preferences.getInt("glide_corrections", 0) +
-                "\nAlternative glide suggestions chosen: " + preferences.getInt("glide_alternatives", 0) +
-                "\nMost corrected glide grid cells: " + preferences.getString("glide_position_stats", "").orEmpty().lines().take(8).joinToString(" · ") +
-                "\n\nOnly local correction counts are stored. Full typed text and passwords are not recorded."
+            text = "Recorded touch and glide coordinates: $eventCount events (maximum 3,000).\nCoordinates are normalized to the keyboard area (0.0–1.0), with local pixel positions for key taps. Corrections are marked when Backspace is used shortly after a touch. No typed message content is stored."
             textSize = 13f
             setTextColor(bodyColor)
             setPadding(0, dp(2), 0, dp(10))
         })
-        learningCard.addView(actionButton("Reset typing data") {
-            preferences.edit().remove("correction_stats").remove("glide_corrections").remove("glide_alternatives").remove("glide_position_stats").apply()
-            recreate()
+        learningCard.addView(actionButton("Export touch data (JSON)") { exportTouchHistory() })
+        learningCard.addView(actionButton("Clear touch data") {
+            AlertDialog.Builder(this)
+                .setTitle("Clear touch data?")
+                .setMessage("All recorded key positions and glide paths will be deleted.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Clear") { _, _ ->
+                    preferences.edit().remove("touch_history").apply()
+                    recreate()
+                }
+                .show()
         })
         content.addView(learningCard, sectionParams())
 
@@ -607,6 +607,36 @@ class MainActivity : Activity() {
 
     companion object {
         private const val MAX_ATTEMPTS = 3
+    }
+
+    private fun exportTouchHistory() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, "droidime-touch-history.json")
+        }
+        startActivityForResult(intent, 4801)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 4801 || resultCode != RESULT_OK || data?.data == null) return
+        try {
+            val events = org.json.JSONArray()
+            preferences.getString("touch_history", "").orEmpty().lineSequence()
+                .filter { it.isNotBlank() }
+                .forEach { events.put(org.json.JSONObject(it)) }
+            val export = org.json.JSONObject()
+                .put("format", "droidime-touch-history")
+                .put("version", 1)
+                .put("exported_at", System.currentTimeMillis())
+                .put("coordinate_system", "normalized_keyboard_xy_0_to_1")
+                .put("events", events)
+            contentResolver.openOutputStream(data.data!!)?.bufferedWriter()?.use { it.write(export.toString(2)) }
+            status.text = "Touch data exported: ${events.length()} events"
+        } catch (error: Exception) {
+            status.text = "Export failed: ${error.message ?: "unknown error"}"
+        }
     }
 
     override fun onDestroy() {
