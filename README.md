@@ -38,5 +38,5 @@ Pushes to `main` build a signed APK and replace the single `latest` GitHub relea
 
 ## Credits
 
-- Thai suggestions use word frequencies from the Thai National Corpus as packaged by PyThaiNLP (CC0).
-- English suggestions use word frequencies from [wordfreq](https://github.com/rspeer/wordfreq) (data: CC BY-SA 4.0).
+- Thai suggestions combine Thai National Corpus word frequencies (PyThaiNLP, CC0) with the 19,069-entry Royal Institute Dictionary word list (MIT-licensed `nv23/thai-wordlist`).
+- English suggestions combine wordfreq frequencies (CC BY-SA 4.0), the SCOWL-derived en_US Hunspell word list (SCOWL permissive word-list terms; see `THIRD_PARTY_NOTICES.md`), an MIT profanity list, and an MIT modern slang list.
