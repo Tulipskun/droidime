@@ -95,6 +95,20 @@ class LogicTest {
         assertEquals("กินข้าว", getField(out[1]!!, "text"))
     }
 
+    @Test fun thaiSuggestionsPrioritizesTheLongestMatchingPrefix() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val words = arrayOf("กขคงจ", "กขคงฉ", "กขคจฉ", "กขคชซ", "กขคญฎ", "กขจฉช")
+        val frequencies = intArrayOf(1, 1, 900000, 800000, 700000, 600000)
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(words, frequencies)
+        setField(service, "dictTh", dict)
+        val out = call(service, "thaiSuggestions", "กขคง") as List<*>
+        assertTrue("completion matching the full typed prefix was hidden", out.any {
+            getField(it!!, "text") == "กขคงจ" || getField(it!!, "text") == "กขคงฉ"
+        })
+    }
+
     @Test fun thaiSuggestionsSupportsWordsLongerThanTwelveCharacters() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val word = "กขคงจฉชซญฎฏฐฑฒณ"
