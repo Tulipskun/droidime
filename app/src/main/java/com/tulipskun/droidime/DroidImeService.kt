@@ -1330,6 +1330,17 @@ class DroidImeService : InputMethodService() {
             }
             .show()
     }
+
+    private fun emojiMatchesQuery(emoji: String, query: String): Boolean {
+        val names = StringBuilder()
+        var offset = 0
+        while (offset < emoji.length) {
+            val codePoint = Character.codePointAt(emoji, offset)
+            Character.getName(codePoint)?.let { names.append(it).append(' ') }
+            offset += Character.charCount(codePoint)
+        }
+        return names.contains(query, ignoreCase = true)
+    }
     private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
     private fun insertEmoji(emoji: String) {
         currentInputConnection?.commitText(emoji, 1)
@@ -2187,13 +2198,11 @@ class DroidImeService : InputMethodService() {
             })
             val items = if (emojiSearchQuery.isNotEmpty()) {
                 EmojiCategory.values().filter { it != EmojiCategory.RECENT }.flatMap { it.items }
-                    .distinct().filter { emoji ->
-                        emoji.codePoints().toArray().mapNotNull { Character.getName(it) }
-                            .any { it.contains(emojiSearchQuery, ignoreCase = true) }
-                    }
+                    .distinct().filter { emoji -> emojiMatchesQuery(emoji, emojiSearchQuery) }
             } else if (emojiCategory == EmojiCategory.RECENT) recentEmojis.toList() else emojiCategory.items
             if (items.isEmpty()) {
-                rows.add(listOf(1f to Cell("No recent emoji", KeyStyle.SECTION, null, action = {})))
+                val emptyLabel = if (emojiSearchQuery.isNotEmpty()) "No results" else "No recent emoji"
+                rows.add(listOf(1f to Cell(emptyLabel, KeyStyle.SECTION, null, action = {})))
             } else {
                 items.chunked(8).forEach { group ->
                     rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
