@@ -693,7 +693,7 @@ class DroidImeService : InputMethodService() {
     private fun thaiSuggestions(before: String): List<Suggestion> {
         val dict = dictTh
         var start = before.length
-        while (start > 0 && isThai(before[start - 1]) && before.length - start < 12) start--
+        while (start > 0 && isThai(before[start - 1]) && before.length - start < 24) start--
         val run = before.substring(start)
         // Completions are ranked by frequency, with a small bonus for the word as typed and for
         // words the user has already used, so the strip's order is stable as more is typed.
@@ -812,11 +812,12 @@ class DroidImeService : InputMethodService() {
     // vowel and tone marks, since those are easy to skip over while gliding. Returns up to three
     // words, best first.
     private fun glideCandidates(
-        xs: FloatArray, ys: FloatArray, centers: Map<Char, FloatArray>, keyW: Float, thai: Boolean
+        xs: FloatArray, ys: FloatArray, centers: Map<Char, FloatArray>, keyW: Float, thai: Boolean,
+        learned: Map<String, Int>
     ): List<String> {
         val dict = (if (thai) dictTh else dictEn)
         if (xs.size < 2 || centers.isEmpty() || keyW <= 0f) return emptyList()
-        if (dict == null && userWords.isEmpty()) return emptyList()
+        if (dict == null && learned.isEmpty()) return emptyList()
         val n = 32
         val gesture = resample(xs, ys, n)
         val gestureLen = pathLength(xs, ys)
@@ -885,7 +886,7 @@ class DroidImeService : InputMethodService() {
             scored.add((best - common * 0.8f) to word)
         }
         // Learned vocabulary joins the same contest; usage count breaks near-ties in its favour.
-        for ((word, count) in userWords) {
+        for ((word, count) in learned) {
             val best = variantDistance(word)
             if (best < 0f) continue
             val common = kotlin.math.min(1f, count * 0.3f)
@@ -2505,10 +2506,20 @@ class DroidImeService : InputMethodService() {
                         glideY.clear()
                         pressed = null
                         invalidate()
-                        commitGlide(
-                            glideCandidates(xs, ys, letterCenters(), letterKeyWidth(), language == Language.THAI),
-                            language == Language.THAI
-                        )
+                        val thai = language == Language.THAI
+                        val centers = letterCenters()
+                        val keyWidth = letterKeyWidth()
+                        val learned = userWords.toMap()
+                        val connection = currentInputConnection
+                        val textBefore = connection?.getTextBeforeCursor(64, 0)?.toString()
+                        Thread {
+                            val words = glideCandidates(xs, ys, centers, keyWidth, thai, learned)
+                            settingsHandler.post {
+                                if (connection != null && currentInputConnection === connection &&
+                                    connection.getTextBeforeCursor(64, 0)?.toString() == textBefore
+                                ) commitGlide(words, thai)
+                            }
+                        }.start()
                         return true
                     }
                     glideStartCell = null
@@ -2552,6 +2563,27 @@ class DroidImeService : InputMethodService() {
             }
             glideX.add(x)
             glideY.add(y)
+            // Keep drawing and gesture scoring bounded during long holds. Preserve the first
+            // and latest points while thinning intermediate samples.
+            if (glideX.size > 256) {
+                val compactX = ArrayList<Float>(129)
+                val compactY = ArrayList<Float>(129)
+                var i = 0
+                while (i < glideX.size) {
+                    compactX.add(glideX[i])
+                    compactY.add(glideY[i])
+                    i += 2
+                }
+                val last = glideX.lastIndex
+                if (compactX.last() != glideX[last] || compactY.last() != glideY[last]) {
+                    compactX.add(glideX[last])
+                    compactY.add(glideY[last])
+                }
+                glideX.clear()
+                glideY.clear()
+                glideX.addAll(compactX)
+                glideY.addAll(compactY)
+            }
             // Exact normalized pointer coordinates are saved when the glide ends.
         }
 
