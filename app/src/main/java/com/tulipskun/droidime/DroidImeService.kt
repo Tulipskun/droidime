@@ -2536,8 +2536,8 @@ class DroidImeService : InputMethodService() {
                 textPaint.typeface = Typeface.DEFAULT
                 return
             }
-            val selected = clipSelection == cell.clipId
-            val menu = clipMenuId == cell.clipId
+            val selected = cell.clipId != null && clipSelection == cell.clipId
+            val menu = cell.clipId != null && clipMenuId == cell.clipId
             shape.setColor(if (selected) colors.active else colors.key)
             shape.setBounds(
                 (cell.rect.left + dpf(6f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
