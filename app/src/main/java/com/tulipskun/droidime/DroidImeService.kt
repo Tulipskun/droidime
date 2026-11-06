@@ -2245,9 +2245,11 @@ class DroidImeService : InputMethodService() {
                 val y2 = (y + h).coerceAtMost(bottom)
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
                 val usable = (width - dpf(8f)).coerceAtLeast(1f)
+                val emojiGridRow = index >= 2 && index != rows.lastIndex &&
+                    row.all { it.second?.style == KeyStyle.EMOJI }
                 var x = dpf(4f)
                 row.forEachIndexed { column, (weight, cell) ->
-                    val x2 = if (index >= 2 && index != rows.lastIndex)
+                    val x2 = if (emojiGridRow)
                         dpf(4f) + (column + 1) * (usable / 8f)
                     else x + usable * weight / totalWeight
                     if (cell != null) {
@@ -2295,7 +2297,8 @@ class DroidImeService : InputMethodService() {
                 drawSuggestion(canvas, cell, colors)
                 return
             }
-            if (cell.style == KeyStyle.EMOJI || cell.style == KeyStyle.EMOJI_CATEGORY) { drawEmojiPanelCell(canvas, cell, colors); return }
+            if (cell.style == KeyStyle.EMOJI || cell.style == KeyStyle.EMOJI_CATEGORY ||
+                cell.style == KeyStyle.EMOJI_FOOTER) { drawEmojiPanelCell(canvas, cell, colors); return }
             if (cell.style == KeyStyle.CLIP || cell.style == KeyStyle.HEADER ||
                 cell.style == KeyStyle.HEADER_CLOSE || cell.style == KeyStyle.SECTION
             ) {
