@@ -238,6 +238,44 @@ class MainActivity : Activity() {
         typingCard.addView(prefSwitch("Clipboard history (tap the clipboard icon)", "clipboard", true))
         content.addView(typingCard, sectionParams())
 
+        val dictionaryCard = card()
+        dictionaryCard.addView(sectionTitle("Dictionary"))
+        dictionaryCard.addView(TextView(this).apply {
+            text = "Search words in the built-in Thai and English dictionaries and your personal dictionary."
+            textSize = 13f
+            setTextColor(mutedColor)
+            setPadding(0, 0, 0, dp(8))
+        })
+        val dictionaryQuery = EditText(this).apply {
+            hint = "Enter a word to search"
+            textSize = 15f
+            singleLine = true
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(inputColor, dp(10))
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        }
+        dictionaryCard.addView(dictionaryQuery, LinearLayout.LayoutParams(-1, -2).apply {
+            bottomMargin = dp(7)
+        })
+        val dictionaryResult = TextView(this).apply {
+            text = "Search to check whether a word is stored."
+            textSize = 13f
+            setTextColor(bodyColor)
+            setPadding(0, dp(8), 0, 0)
+        }
+        val runDictionarySearch = {
+            searchDictionary(dictionaryQuery.text.toString(), dictionaryResult)
+        }
+        dictionaryCard.addView(actionButton("Search dictionary", runDictionarySearch))
+        dictionaryQuery.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                runDictionarySearch()
+                true
+            } else false
+        }
+        dictionaryCard.addView(dictionaryResult)
+        content.addView(dictionaryCard, sectionParams())
+
         val learningCard = card()
         learningCard.addView(sectionTitle("Touch coordinate learning"))
         val eventCount = preferences.getString("touch_history", "").orEmpty().lineSequence().count { it.isNotBlank() }
@@ -315,6 +353,81 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::setupStatus.isInitialized) refreshSetupStatus()
+    }
+
+    private fun searchDictionary(rawQuery: String, output: TextView) {
+        val query = rawQuery.trim()
+        if (query.isEmpty()) {
+            output.text = "Enter a word to search."
+            return
+        }
+        output.text = "Searching dictionary…"
+        executor.execute {
+            try {
+                val matches = ArrayList<String>()
+                var thaiCount = 0
+                var englishCount = 0
+                var personalCount = 0
+                var thaiExact = false
+                var englishExact = false
+                var personalExact = false
+
+                fun scanAsset(name: String, isThai: Boolean) {
+                    assets.open(name).bufferedReader(Charsets.UTF_8).useLines { lines ->
+                        lines.forEach { line ->
+                            val tab = line.indexOf('\\t')
+                            if (tab <= 0) return@forEach
+                            val word = line.substring(0, tab)
+                            val normalized = if (isThai) word else word.lowercase()
+                            val needle = if (isThai) query else query.lowercase()
+                            if (normalized == needle) {
+                                if (isThai) thaiExact = true else englishExact = true
+                            }
+                            if (normalized.contains(needle)) {
+                                if (isThai) thaiCount++ else englishCount++
+                                if (matches.size < 60) matches.add("$word  ·  ${if (isThai) "Thai" else "English"}")
+                            }
+                        }
+                    }
+                }
+
+                scanAsset("words_th.txt", true)
+                scanAsset("words_en.txt", false)
+
+                val personal = preferences.getString("user_dict", "").orEmpty()
+                for (line in personal.lineSequence()) {
+                    val tab = line.indexOf('\\t')
+                    if (tab <= 0) continue
+                    val word = line.substring(0, tab)
+                    if (word.contains(query, ignoreCase = true)) {
+                        personalCount++
+                        if (word.equals(query, ignoreCase = true)) personalExact = true
+                        if (matches.size < 60) matches.add("$word  ·  Personal")
+                    }
+                }
+
+                val summary = buildString {
+                    append("Exact match: ")
+                    append(if (thaiExact || englishExact || personalExact) "FOUND" else "NOT FOUND")
+                    append("\\nThai: $thaiCount  ·  English: $englishCount  ·  Personal: $personalCount")
+                    if (matches.isNotEmpty()) {
+                        append("\\n\\nMatches")
+                        matches.forEach { append("\\n• ").append(it) }
+                        val total = thaiCount + englishCount + personalCount
+                        if (total > matches.size) append("\\n…and ${total - matches.size} more")
+                    } else {
+                        append("\\n\\nNo matching words in the dictionaries.")
+                    }
+                }
+                runOnUiThread {
+                    if (!destroyed) output.text = summary
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (!destroyed) output.text = "Dictionary search failed: ${error.message ?: "unknown error"}"
+                }
+            }
+        }
     }
 
     private fun showCrashLog() {
