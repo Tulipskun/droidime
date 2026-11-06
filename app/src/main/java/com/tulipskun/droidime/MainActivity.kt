@@ -249,7 +249,7 @@ class MainActivity : Activity() {
         val dictionaryQuery = EditText(this).apply {
             hint = "Enter a word to search"
             textSize = 15f
-            singleLine = true
+            maxLines = 1
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(inputColor, dp(10))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
