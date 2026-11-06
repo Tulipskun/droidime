@@ -85,7 +85,7 @@ class LogicTest {
         assertTrue(call(service, "isThaiText", "ภาษาไทย") as Boolean)
         assertTrue(call(service, "isThaiText", "กำลัง") as Boolean)
         assertFalse(call(service, "isThaiText", "ไทย ") as Boolean)
-        assertFalse(call(service, "isThaiText", "ไทยๆ") as Boolean == false)
+        assertTrue(call(service, "isThaiText", "ไทยๆ") as Boolean)
     }
 
     @Test fun thaiSuggestionsOrdersByScore() {
