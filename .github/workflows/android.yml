@@ -45,6 +45,14 @@ jobs:
           install -m 600 .signing-key/release.keystore app/release.keystore
       - name: Run unit tests
         run: gradle --no-daemon testDebugUnitTest
+      - name: Upload keyboard render previews
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyboard-render-${{ github.run_number }}
+          path: app/build/render/*.png
+          if-no-files-found: warn
+          retention-days: 3
       - name: Build APK
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
