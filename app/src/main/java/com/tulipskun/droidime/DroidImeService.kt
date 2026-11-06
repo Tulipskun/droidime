@@ -48,7 +48,7 @@ class DroidImeService : InputMethodService() {
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
     private enum class KeyStyle {
-        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY
+        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY, EMOJI_FOOTER
     }
     private enum class EmojiCategory(val title: String, val icon: String, val items: List<String>) {
         RECENT("Recent", "🕘", emptyList()),
@@ -2208,26 +2208,48 @@ class DroidImeService : InputMethodService() {
                     rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
                 }
             }
+            rows.add(listOf(
+                1f to Cell("ABC", KeyStyle.EMOJI_FOOTER, null, action = { closeEmojiPanel() }),
+                1f to Cell("Emoji", KeyStyle.EMOJI_FOOTER, null, action = {
+                    emojiSearchQuery = ""
+                    emojiCategory = if (recentEmojis.isNotEmpty()) EmojiCategory.RECENT else EmojiCategory.FACES
+                    renderKeyboard()
+                }),
+                1f to Cell("Delete", KeyStyle.EMOJI_FOOTER, null, action = { deleteOne() })
+            ))
             return rows
         }
 
         private fun layoutEmojiRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             if (rows.size < 3) { cells = flat; return }
             val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(1f)
-            val top = dpf(6f); val headerH = dpf(42f); val categoryH = dpf(42f); val gap = dpf(3f)
+            val top = dpf(6f); val headerH = dpf(42f); val categoryH = dpf(42f)
+            val footerH = dpf(48f); val gap = dpf(3f)
             val gridTop = top + headerH + gap + categoryH + gap
-            val gridRows = (rows.size - 2).coerceAtLeast(1)
-            val rowH = ((bottom - gridTop) / gridRows).coerceAtLeast(dpf(26f))
+            val footerTop = (bottom - footerH).coerceAtLeast(gridTop + 1f)
+            val gridRows = (rows.size - 3).coerceAtLeast(1)
+            val rowH = minOf(dpf(52f), (footerTop - gridTop) / gridRows)
             rows.forEachIndexed { index, row ->
-                val y = when (index) { 0 -> top; 1 -> top + headerH + gap; else -> gridTop + (index - 2) * rowH }
-                val h = when (index) { 0 -> headerH; 1 -> categoryH; else -> rowH }
+                val y = when {
+                    index == 0 -> top
+                    index == 1 -> top + headerH + gap
+                    index == rows.lastIndex -> footerTop
+                    else -> gridTop + (index - 2) * rowH
+                }
+                val h = when (index) {
+                    0 -> headerH
+                    1 -> categoryH
+                    rows.lastIndex -> footerH
+                    else -> rowH
+                }
                 val y2 = (y + h).coerceAtMost(bottom)
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
                 val usable = (width - dpf(8f)).coerceAtLeast(1f)
                 var x = dpf(4f)
                 row.forEachIndexed { column, (weight, cell) ->
-                    val x2 = if (index >= 2) dpf(4f) + (column + 1) * (usable / 8f)
-                        else x + usable * weight / totalWeight
+                    val x2 = if (index >= 2 && index != rows.lastIndex)
+                        dpf(4f) + (column + 1) * (usable / 8f)
+                    else x + usable * weight / totalWeight
                     if (cell != null) {
                         cell.rect.set(x, y, x2, y2)
                         cell.touchRect.set(x, if (index == 0) 0f else y, x2, y2)
@@ -2240,14 +2262,23 @@ class DroidImeService : InputMethodService() {
         }
 
         private fun drawEmojiPanelCell(canvas: Canvas, cell: Cell, colors: Palette) {
-            val selected = cell.style == KeyStyle.EMOJI_CATEGORY && cell.label == emojiCategory.icon
-            shape.setColor(if (cell === pressed || selected) colors.active else colors.key)
-            shape.setBounds((cell.rect.left + dpf(2f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
-                (cell.rect.right - dpf(2f)).toInt(), (cell.rect.bottom - dpf(2f)).toInt())
-            shape.cornerRadius = if (cell.style == KeyStyle.EMOJI) dpf(8f) else dpf(12f); shape.draw(canvas)
-            textPaint.color = if (selected) colors.enterText else colors.text
+            val selectedCategory = cell.style == KeyStyle.EMOJI_CATEGORY && cell.label == emojiCategory.icon
+            val selectedFooter = cell.style == KeyStyle.EMOJI_FOOTER && cell.label == "Emoji"
+            if (selectedCategory || selectedFooter || cell === pressed) {
+                shape.setColor(colors.active)
+                shape.setBounds((cell.rect.left + dpf(2f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
+                    (cell.rect.right - dpf(2f)).toInt(), (cell.rect.bottom - dpf(2f)).toInt())
+                shape.cornerRadius = if (cell.style == KeyStyle.EMOJI_CATEGORY) cell.rect.height() / 2f else dpf(12f)
+                shape.draw(canvas)
+            }
+            textPaint.color = if (selectedCategory || selectedFooter) colors.enterText
+                else if (cell.style == KeyStyle.EMOJI_FOOTER) colors.hint else colors.text
             textPaint.typeface = if (cell.style == KeyStyle.EMOJI_CATEGORY) mediumFace else Typeface.DEFAULT
-            textPaint.textSize = dpf(if (cell.style == KeyStyle.EMOJI) 25f else 20f)
+            textPaint.textSize = dpf(when (cell.style) {
+                KeyStyle.EMOJI -> 27f
+                KeyStyle.EMOJI_FOOTER -> 15f
+                else -> 20f
+            })
             textPaint.textAlign = Paint.Align.CENTER
             val m = textPaint.fontMetrics
             canvas.drawText(cell.label, cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
