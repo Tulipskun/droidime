@@ -95,6 +95,17 @@ class LogicTest {
         assertEquals("กินข้าว", getField(out[1]!!, "text"))
     }
 
+    @Test fun thaiSuggestionsSupportsWordsLongerThanTwelveCharacters() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val word = "กขคงจฉชซญฎฏฐฑฒณ"
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(arrayOf(word), intArrayOf(100))
+        setField(service, "dictTh", dict)
+        val out = call(service, "thaiSuggestions", word) as List<*>
+        assertTrue("long Thai dictionary word was not offered", out.any { getField(it!!, "text") == word })
+    }
+
     @Test fun englishSuggestionsKeepsTypedWordFirst() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val dict = javaClass.classLoader.let {
