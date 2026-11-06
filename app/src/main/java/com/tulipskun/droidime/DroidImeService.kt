@@ -290,6 +290,7 @@ class DroidImeService : InputMethodService() {
     private val deleteHandler = Handler(Looper.getMainLooper())
     private var deleteRepeat: Runnable? = null
     private var deleteHold: Runnable? = null
+    private var deleteGeneration = 0L
     private var deleteSpeedMs = DELETE_START_MS
     private var spaceDragStartX = 0f
     private var spaceDragStartCursor = -1
@@ -1258,6 +1259,7 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun stopDeleteRepeat() {
+        deleteGeneration++
         deleteHold?.let { deleteHandler.removeCallbacks(it) }
         deleteHold = null
         deleteRepeat?.let { deleteHandler.removeCallbacks(it) }
@@ -3060,17 +3062,25 @@ class DroidImeService : InputMethodService() {
         // Press deletes once for a tap; a hold waits out an initial delay then repeats,
         // speeding up as the hold continues.
         private fun beginDelete() {
+            stopDeleteRepeat()
+            val generation = deleteGeneration
             deleteOne(updateShift = false)
             deleteSpeedMs = DELETE_START_MS
-            val hold = Runnable { startDeleteRepeat() }
+            val hold = Runnable {
+                if (generation == deleteGeneration && pressed?.isDelete == true) {
+                    startDeleteRepeat(generation)
+                }
+            }
             deleteHold = hold
             deleteHandler.postDelayed(hold, DELETE_INITIAL_DELAY_MS)
         }
 
-        private fun startDeleteRepeat() {
+        private fun startDeleteRepeat(generation: Long) {
+            if (generation != deleteGeneration || pressed?.isDelete != true) return
             deleteHold = null
             val repeat = object : Runnable {
                 override fun run() {
+                    if (generation != deleteGeneration || pressed?.isDelete != true) return
                     deleteOne(updateShift = false)
                     deleteSpeedMs = (deleteSpeedMs - DELETE_ACCEL_STEP).coerceAtLeast(DELETE_MIN_MS)
                     deleteRepeat = this
