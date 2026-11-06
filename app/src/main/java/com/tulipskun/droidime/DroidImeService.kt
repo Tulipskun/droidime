@@ -1,5 +1,6 @@
 package com.tulipskun.droidime
 
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -30,6 +31,7 @@ import android.view.SoundEffectConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.widget.EditText
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.inputmethod.EditorInfo
@@ -832,6 +834,8 @@ class DroidImeService : InputMethodService() {
     private var clipPanelVisible = false
     private var emojiPanelVisible = false
     private var editorPanelVisible = false
+    private var editorSelecting = false
+    private var emojiSearchQuery = ""
     private var emojiCategory = EmojiCategory.FACES
 
     private fun glideAllowed(): Boolean =
@@ -1170,12 +1174,14 @@ class DroidImeService : InputMethodService() {
     private fun openEditorPanel() {
         clipPanelVisible = false
         emojiPanelVisible = false
+        editorSelecting = false
         editorPanelVisible = true
         renderKeyboard()
     }
 
     private fun closeEditorPanel() {
         editorPanelVisible = false
+        editorSelecting = false
         renderKeyboard()
     }
 
@@ -1191,16 +1197,15 @@ class DroidImeService : InputMethodService() {
     private fun editorAction(label: String) {
         val connection = currentInputConnection ?: return
         when (label) {
-            "←" -> editorKey(KeyEvent.KEYCODE_DPAD_LEFT)
-            "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT)
-            "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP)
-            "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN)
-            "Select ←" -> editorKey(KeyEvent.KEYCODE_DPAD_LEFT, selecting = true)
-            "Select →" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = true)
-            "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME)
-            "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END)
+            "←" -> editorKey(KeyEvent.KEYCODE_DPAD_LEFT, selecting = editorSelecting)
+            "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = editorSelecting)
+            "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP, selecting = editorSelecting)
+            "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN, selecting = editorSelecting)
+            "Select" -> { editorSelecting = !editorSelecting; renderKeyboard() }
+            "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME, selecting = editorSelecting)
+            "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END, selecting = editorSelecting)
             "Select all" -> connection.performContextMenuAction(android.R.id.selectAll)
-            "Cut" -> connection.performContextMenuAction(android.R.id.cut)
+            "Delete" -> deleteOne()
             "Copy" -> connection.performContextMenuAction(android.R.id.copy)
             "Paste" -> connection.performContextMenuAction(android.R.id.paste)
             "Undo" -> sendCtrl(KeyEvent.KEYCODE_Z)
@@ -1211,14 +1216,14 @@ class DroidImeService : InputMethodService() {
 
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
         fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
-        val rows = mutableListOf<List<Pair<Float, Cell?>>>()
-        rows.add(listOf(3f to Cell("Text editing", KeyStyle.HEADER, null, action = {}),
-            1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })))
-        rows.add(listOf(1f to action("←"), 1f to action("↑"), 1f to action("↓"), 1f to action("→")))
-        rows.add(listOf(1f to action("Select ←"), 1f to action("Select →"), 1f to action("Home"), 1f to action("End")))
-        rows.add(listOf(1f to action("Select all"), 1f to action("Cut"), 1f to action("Copy"), 1f to action("Paste")))
-        rows.add(listOf(1f to action("Undo"), 1f to action("Redo")))
-        return rows
+        return listOf(
+            listOf(3f to Cell("Text editing", KeyStyle.HEADER, null, action = {}),
+                1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
+            listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to action("Select all")),
+            listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
+            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
+            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete"))
+        )
     }
 
     // Long-pressing the cursor tool copies the selection, which is how a clip reaches the
@@ -1304,8 +1309,26 @@ class DroidImeService : InputMethodService() {
     private fun showEmoji() {
         clipPanelVisible = false; editorPanelVisible = false
         emojiPanelVisible = true
+        emojiSearchQuery = ""
         emojiCategory = if (recentEmojis.isNotEmpty()) EmojiCategory.RECENT else EmojiCategory.FACES
         renderKeyboard()
+    }
+
+    private fun showEmojiSearch() {
+        val field = EditText(this).apply {
+            hint = "Search emoji"
+            setSingleLine(true)
+            setText(emojiSearchQuery)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Search emoji")
+            .setView(field)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Search") { _, _ ->
+                emojiSearchQuery = field.text.toString().trim()
+                renderKeyboard()
+            }
+            .show()
     }
     private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
     private fun insertEmoji(emoji: String) {
@@ -1782,11 +1805,15 @@ class DroidImeService : InputMethodService() {
             }
             if (pinned.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("Pinned")))
-                pinned.forEach { rows.add(listOf(1f to clipCell(it.id))) }
+                pinned.chunked(2).forEach { group ->
+                    rows.add(group.map { 1f to clipCell(it.id) } + if (group.size == 1) listOf(1f to null) else emptyList())
+                }
             }
             if (recent.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("Recent")))
-                recent.forEach { rows.add(listOf(1f to clipCell(it.id))) }
+                recent.chunked(2).forEach { group ->
+                    rows.add(group.map { 1f to clipCell(it.id) } + if (group.size == 1) listOf(1f to null) else emptyList())
+                }
             }
             return rows
         }
@@ -2016,6 +2043,7 @@ class DroidImeService : InputMethodService() {
                 return
             }
             if (emojiPanelVisible) { layoutEmojiRows(rows, flat); return }
+            if (editorPanelVisible) { layoutEditorRows(rows, flat); return }
             if (panelOpen()) { layoutClipRows(rows, flat); return }
             val padX = dpf(6.7f)
             val padTop = dpf(STRIP_TOP_DP)
@@ -2067,6 +2095,61 @@ class DroidImeService : InputMethodService() {
 
         // The panel fills the whole keyboard: a header row at the top and the clip rows sharing
         // what is left, so a long list still fits and every row stays tappable.
+        private fun layoutEditorRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
+            val editorCells = rows.flatten().mapNotNull { it.second }.distinct()
+            val byLabel = editorCells.associateBy { it.label }
+            val left = dpf(10f)
+            val right = (width - dpf(10f)).coerceAtLeast(left + 1f)
+            val gap = dpf(7f)
+            val colW = ((right - left - gap * 3f) / 4f).coerceAtLeast(1f)
+            val top = dpf(6f)
+            val headerH = dpf(42f)
+            val bodyTop = top + headerH + gap
+            val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(bodyTop + 1f)
+            val footerH = dpf(58f)
+            val bodyBottom = bottom - footerH - gap
+            val rowH = ((bodyBottom - bodyTop - gap * 2f) / 3f).coerceAtLeast(1f)
+            fun place(label: String, column: Int, row: Int, spanRows: Int = 1) {
+                val cell = byLabel[label] ?: return
+                val x = left + column * (colW + gap)
+                val y = bodyTop + row * (rowH + gap)
+                val y2 = (y + rowH * spanRows + gap * (spanRows - 1)).coerceAtMost(bodyBottom)
+                cell.rect.set(x, y, x + colW, y2)
+                cell.touchRect.set(x, y - gap / 2f, x + colW, y2 + gap / 2f)
+                flat.add(cell)
+            }
+            byLabel["Text editing"]?.let { cell ->
+                cell.rect.set(left, top, right, top + headerH)
+                cell.touchRect.set(0f, 0f, width.toFloat(), top + headerH + gap)
+                flat.add(cell)
+            }
+            byLabel["Close"]?.let { cell ->
+                cell.rect.set(right - dpf(48f), top, right, top + headerH)
+                cell.touchRect.set(right - dpf(56f), 0f, width.toFloat(), top + headerH + gap)
+                flat.add(cell)
+            }
+            place("←", 0, 0, 3)
+            place("↑", 1, 0)
+            place("Select", 1, 1)
+            place("↓", 1, 2)
+            place("→", 2, 0, 3)
+            place("Select all", 3, 0)
+            place("Copy", 3, 1)
+            place("Paste", 3, 2)
+            val footerGap = gap
+            val footerY = bodyBottom + footerGap
+            val footerW = (right - left - footerGap * 2f) / 4f
+            listOf("Home", "End", "Delete").forEachIndexed { index, label ->
+                val cell = byLabel[label] ?: return@forEachIndexed
+                val x = when (index) { 0 -> left; 1 -> left + footerW * 1.5f + footerGap * 0.5f; else -> left + footerW * 3f + footerGap }
+                val w = if (index == 2) footerW else footerW * 1.5f
+                cell.rect.set(x, footerY, (x + w).coerceAtMost(right), bottom)
+                cell.touchRect.set(cell.rect.left, footerY, cell.rect.right, height.toFloat())
+                flat.add(cell)
+            }
+            this.cells = flat
+        }
+
         private fun layoutClipRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             val padBottom = dpf(8f) + navigationInset
             val availH = (height - dpf(CLIP_PAD_TOP_DP) - padBottom).coerceAtLeast(1f)
@@ -2097,12 +2180,18 @@ class DroidImeService : InputMethodService() {
 
         private fun buildEmojiRows(): List<List<Pair<Float, Cell?>>> {
             val rows = mutableListOf<List<Pair<Float, Cell?>>>()
-            rows.add(listOf(3f to Cell("Emoji", KeyStyle.HEADER, null, action = {}),
+            rows.add(listOf(3f to Cell("Search", KeyStyle.CLIP, null, action = { showEmojiSearch() }),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() })))
             rows.add(EmojiCategory.values().map { category ->
                 1f to Cell(category.icon, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
             })
-            val items = if (emojiCategory == EmojiCategory.RECENT) recentEmojis.toList() else emojiCategory.items
+            val items = if (emojiSearchQuery.isNotEmpty()) {
+                EmojiCategory.values().filter { it != EmojiCategory.RECENT }.flatMap { it.items }
+                    .distinct().filter { emoji ->
+                        emoji.codePoints().toArray().mapNotNull { Character.getName(it) }
+                            .any { it.contains(emojiSearchQuery, ignoreCase = true) }
+                    }
+            } else if (emojiCategory == EmojiCategory.RECENT) recentEmojis.toList() else emojiCategory.items
             if (items.isEmpty()) {
                 rows.add(listOf(1f to Cell("No recent emoji", KeyStyle.SECTION, null, action = {})))
             } else {
@@ -2378,7 +2467,12 @@ class DroidImeService : InputMethodService() {
                 val m = textPaint.fontMetrics
                 val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
                 textPaint.textAlign = Paint.Align.LEFT
-                canvas.drawText(if (emojiPanelVisible) "Emoji" else "Clipboard", cell.rect.left + dpf(14f), cy, textPaint)
+                val title = when {
+                    editorPanelVisible -> "Text editing"
+                    emojiPanelVisible -> "Emoji"
+                    else -> "Clipboard"
+                }
+                canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.RIGHT
                 canvas.drawText(cell.label, cell.rect.right - dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.CENTER
