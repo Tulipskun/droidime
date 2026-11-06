@@ -375,7 +375,7 @@ class MainActivity : Activity() {
                 fun scanAsset(name: String, isThai: Boolean) {
                     assets.open(name).bufferedReader(Charsets.UTF_8).useLines { lines ->
                         lines.forEach { line ->
-                            val tab = line.indexOf('\\t')
+                            val tab = line.indexOf('\t')
                             if (tab <= 0) return@forEach
                             val word = line.substring(0, tab)
                             val normalized = if (isThai) word else word.lowercase()
@@ -396,7 +396,7 @@ class MainActivity : Activity() {
 
                 val personal = preferences.getString("user_dict", "").orEmpty()
                 for (line in personal.lineSequence()) {
-                    val tab = line.indexOf('\\t')
+                    val tab = line.indexOf('\t')
                     if (tab <= 0) continue
                     val word = line.substring(0, tab)
                     if (word.contains(query, ignoreCase = true)) {
@@ -409,14 +409,14 @@ class MainActivity : Activity() {
                 val summary = buildString {
                     append("Exact match: ")
                     append(if (thaiExact || englishExact || personalExact) "FOUND" else "NOT FOUND")
-                    append("\\nThai: $thaiCount  ·  English: $englishCount  ·  Personal: $personalCount")
+                    append("\nThai: $thaiCount  ·  English: $englishCount  ·  Personal: $personalCount")
                     if (matches.isNotEmpty()) {
-                        append("\\n\\nMatches")
-                        matches.forEach { append("\\n• ").append(it) }
+                        append("\n\nMatches")
+                        matches.forEach { append("\n• ").append(it) }
                         val total = thaiCount + englishCount + personalCount
-                        if (total > matches.size) append("\\n…and ${total - matches.size} more")
+                        if (total > matches.size) append("\n…and ${total - matches.size} more")
                     } else {
-                        append("\\n\\nNo matching words in the dictionaries.")
+                        append("\n\nNo matching words in the dictionaries.")
                     }
                 }
                 runOnUiThread {
