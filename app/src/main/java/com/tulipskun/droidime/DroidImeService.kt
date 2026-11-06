@@ -728,7 +728,7 @@ class DroidImeService : InputMethodService() {
                 for (index in dict.complete(suffix, 3)) {
                     val word = dict.words[index]
                     if (completions.none { s -> s.text == word }) {
-                        completions.add(Suggestion(word, k, "", dict.freqs[index]))
+                        completions.add(Suggestion(word, k, "", dict.freqs[index] + k * 1_000_000))
                     }
                 }
             }
@@ -737,7 +737,7 @@ class DroidImeService : InputMethodService() {
                 for ((word, count) in userWords) {
                     if (word.length > suffix.length && word.startsWith(suffix) &&
                         completions.none { s -> s.text == word }) {
-                        completions.add(Suggestion(word, k, "", count * 4))
+                        completions.add(Suggestion(word, k, "", count * 4 + k * 1_000_000))
                     }
                 }
             }
