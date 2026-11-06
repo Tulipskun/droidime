@@ -1817,7 +1817,7 @@ class DroidImeService : InputMethodService() {
             if (pinned.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("Pinned")))
                 pinned.chunked(2).forEach { group ->
-                    rows.add(group.map { 1f to clipCell(it.id) } + if (group.size == 1) listOf(1f to null) else emptyList())
+                    rows.add(group.map { 1f to clipCell(it.id) } + List(2 - group.size) { 1f to null })
                 }
             }
             if (recent.isNotEmpty()) {
@@ -2205,7 +2205,10 @@ class DroidImeService : InputMethodService() {
                 rows.add(listOf(1f to Cell(emptyLabel, KeyStyle.SECTION, null, action = {})))
             } else {
                 items.chunked(8).forEach { group ->
-                    rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
+                    val cells = group.map { emoji ->
+                        1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) })
+                    }
+                    rows.add(cells + List(8 - group.size) { 1f to null })
                 }
             }
             rows.add(listOf(
