@@ -49,6 +49,7 @@ class DroidImeService : InputMethodService() {
         NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY
     }
     private enum class EmojiCategory(val title: String, val icon: String, val items: List<String>) {
+        RECENT("Recent", "🕘", emptyList()),
         FACES("Faces", "😀", listOf("😀","😃","😄","😁","😆","😅","😂","🤣","😊","😉","😍","🥰","😘","😋","😜","🤪","🤔","😎","🥳","🥺","😭","😱","🤖","👻","💩","🎃")),
         PEOPLE("People", "👤", listOf("👋","👌","✌️","🤞","🤟","🤘","👍","👎","👏","🙌","🙏","💪","👀","👄","👶","🧒","👦","👧","🧑","👨","👩","🤦","🤷","🧑‍💻")),
         NATURE("Animals & nature", "🐾", listOf("🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🦋","🐝","🐢","🐍","🦖","🐙","🦀","🐠","🐬","🌸","🌹","🌻","🌈","☀️","🌙")),
@@ -253,6 +254,8 @@ class DroidImeService : InputMethodService() {
     // was showing — a copy made in another app is visible to the keyboard, but only while it is
     // on screen, so that is the only moment it can be picked up.
     private val clips = ArrayList<Clip>()
+    private val recentEmojis = ArrayList<String>()
+    private var clipboardListening = false
     private var clipMenuId: String? = null
     private var clipSelection: String? = null
     private var clipEdit = false
@@ -365,13 +368,7 @@ class DroidImeService : InputMethodService() {
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
         loadUserWords()
         loadClips()
-        val clipboard = clipboardManager()
-        if (clipboard != null) {
-            clipboard.addPrimaryClipChangedListener(clipListener)
-            // The keyboard may be started with a clip already on the clipboard; pick it up so the
-            // panel is not empty on the first open.
-            recordSystemClip(clipboard)
-        }
+        loadRecentEmojis()
         Thread {
             dictEn = loadDictionary("words_en.txt")
             dictTh = loadDictionary("words_th.txt")
@@ -382,7 +379,7 @@ class DroidImeService : InputMethodService() {
     override fun onDestroy() {
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         stopDeleteRepeat()
-        clipboardManager()?.removePrimaryClipChangedListener(clipListener)
+        setClipboardListening(false)
         keyboardView = null
         super.onDestroy()
     }
@@ -390,9 +387,24 @@ class DroidImeService : InputMethodService() {
     private fun clipboardManager(): ClipboardManager? =
         getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
 
-    // The keyboard is allowed to read the clipboard while it is the input method, so a copy made
-    // anywhere while it is showing arrives here. Listener callbacks come on the main thread.
+    // Read clipboard contents only while the IME window is visible. This avoids collecting clips
+    // while DroidIME is running in the background and follows Android's foreground clipboard rules.
+    private fun setClipboardListening(active: Boolean) {
+        if (clipboardListening == active) return
+        val manager = clipboardManager() ?: return
+        if (active) {
+            manager.addPrimaryClipChangedListener(clipListener)
+            clipboardListening = true
+            recordSystemClip(manager)
+        } else {
+            manager.removePrimaryClipChangedListener(clipListener)
+            clipboardListening = false
+        }
+    }
+
+    // Listener callbacks arrive while this keyboard is the active input method.
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        if (!clipboardListening) return@OnPrimaryClipChangedListener
         val manager = clipboardManager() ?: return@OnPrimaryClipChangedListener
         recordSystemClip(manager)
     }
@@ -525,6 +537,7 @@ class DroidImeService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        setClipboardListening(true)
         // The panel belongs to one editing session: leaving the field closes it.
         clipSelection = null
         clipMenuId = null
@@ -561,6 +574,7 @@ class DroidImeService : InputMethodService() {
         // followed by a space.
         learnTrailingWord()
         finishThaiComposition()
+        setClipboardListening(false)
         super.onFinishInputView(finishingInput)
     }
 
@@ -1289,13 +1303,25 @@ class DroidImeService : InputMethodService() {
     // Toolbar emoji key: tap types a comma, long-press opens the picker (not built yet).
     private fun showEmoji() {
         clipPanelVisible = false; editorPanelVisible = false
-        emojiPanelVisible = true; emojiCategory = EmojiCategory.FACES; renderKeyboard()
+        emojiPanelVisible = true
+        emojiCategory = if (recentEmojis.isNotEmpty()) EmojiCategory.RECENT else EmojiCategory.FACES
+        renderKeyboard()
     }
     private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
     private fun insertEmoji(emoji: String) {
         currentInputConnection?.commitText(emoji, 1)
+        recentEmojis.remove(emoji)
+        recentEmojis.add(0, emoji)
+        while (recentEmojis.size > 32) recentEmojis.removeAt(recentEmojis.lastIndex)
+        preferences.edit().putString(RECENT_EMOJI_PREF, recentEmojis.joinToString("|")).apply()
         closeEmojiPanel()
         afterTextChanged()
+    }
+
+    private fun loadRecentEmojis() {
+        recentEmojis.clear()
+        preferences.getString(RECENT_EMOJI_PREF, "").orEmpty()
+            .split("|").filter { it.isNotEmpty() }.take(32).forEach(recentEmojis::add)
     }
 
     // English capitalises after sentence ends when the field asks for it.
@@ -2076,8 +2102,13 @@ class DroidImeService : InputMethodService() {
             rows.add(EmojiCategory.values().map { category ->
                 1f to Cell(category.icon, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
             })
-            emojiCategory.items.chunked(8).forEach { group ->
-                rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
+            val items = if (emojiCategory == EmojiCategory.RECENT) recentEmojis.toList() else emojiCategory.items
+            if (items.isEmpty()) {
+                rows.add(listOf(1f to Cell("No recent emoji", KeyStyle.SECTION, null, action = {})))
+            } else {
+                items.chunked(8).forEach { group ->
+                    rows.add(group.map { emoji -> 1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) }) })
+                }
             }
             return rows
         }
@@ -2901,6 +2932,7 @@ class DroidImeService : InputMethodService() {
         private const val TOUCH_HISTORY = "touch_history"
         private const val GLIDE_ALTERNATIVES = "glide_alternatives"
         private const val CLIP_DICT = "clipboard_items"
+        private const val RECENT_EMOJI_PREF = "recent_emojis"
         private const val CLIP_KEEP = 12
         private const val CLIP_STORE_LIMIT = 20_000
         private const val CLIP_HEADER_DP = 44f
