@@ -119,6 +119,6 @@ class LogicTest {
             assertTrue("missing Thai word: $word", (call(thai, "indexOf", word) as Int) >= 0)
         }
         assertTrue((getField(english, "words") as Array<*>).size >= 65000)
-        assertTrue((getField(thai, "words") as Array<*>).size >= 44000)
+        assertTrue((getField(thai, "words") as Array<*>).size >= 54000)
     }
 }
