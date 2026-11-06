@@ -2196,19 +2196,38 @@ class DroidImeService : InputMethodService() {
             rows.add(EmojiCategory.values().map { category ->
                 1f to Cell(category.icon, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
             })
-            val items = if (emojiSearchQuery.isNotEmpty()) {
-                EmojiCategory.values().filter { it != EmojiCategory.RECENT }.flatMap { it.items }
-                    .distinct().filter { emoji -> emojiMatchesQuery(emoji, emojiSearchQuery) }
-            } else if (emojiCategory == EmojiCategory.RECENT) recentEmojis.toList() else emojiCategory.items
-            if (items.isEmpty()) {
-                val emptyLabel = if (emojiSearchQuery.isNotEmpty()) "No results" else "No recent emoji"
-                rows.add(listOf(1f to Cell(emptyLabel, KeyStyle.SECTION, null, action = {})))
-            } else {
+            fun addSection(title: String) {
+                rows.add(listOf(1f to Cell(title, KeyStyle.SECTION, null, action = {})))
+            }
+            fun addEmojiGrid(items: List<String>) {
                 items.chunked(8).forEach { group ->
                     val cells = group.map { emoji ->
                         1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) })
                     }
                     rows.add(cells + List(8 - group.size) { 1f to null })
+                }
+            }
+            when {
+                emojiSearchQuery.isNotEmpty() -> {
+                    val matches = EmojiCategory.values().filter { it != EmojiCategory.RECENT }.flatMap { it.items }
+                        .distinct().filter { emoji -> emojiMatchesQuery(emoji, emojiSearchQuery) }.take(48)
+                    if (matches.isEmpty()) addSection("No results")
+                    else {
+                        addSection("Search results")
+                        addEmojiGrid(matches)
+                    }
+                }
+                emojiCategory == EmojiCategory.RECENT -> {
+                    if (recentEmojis.isNotEmpty()) {
+                        addSection("Recent Emoji")
+                        addEmojiGrid(recentEmojis.take(32))
+                    }
+                    addSection("Smileys & Emotions")
+                    addEmojiGrid(EmojiCategory.FACES.items)
+                }
+                else -> {
+                    addSection(emojiCategory.title)
+                    addEmojiGrid(emojiCategory.items)
                 }
             }
             rows.add(listOf(
@@ -2226,30 +2245,31 @@ class DroidImeService : InputMethodService() {
         private fun layoutEmojiRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             if (rows.size < 3) { cells = flat; return }
             val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(1f)
-            val top = dpf(6f); val headerH = dpf(42f); val categoryH = dpf(42f)
-            val footerH = dpf(48f); val gap = dpf(3f)
+            val top = dpf(6f)
+            val headerH = dpf(42f)
+            val categoryH = dpf(42f)
+            val footerH = dpf(48f)
+            val gap = dpf(3f)
             val gridTop = top + headerH + gap + categoryH + gap
             val footerTop = (bottom - footerH).coerceAtLeast(gridTop + 1f)
-            val gridRows = (rows.size - 3).coerceAtLeast(1)
-            val rowH = minOf(dpf(52f), (footerTop - gridTop) / gridRows)
-            rows.forEachIndexed { index, row ->
-                val y = when {
-                    index == 0 -> top
-                    index == 1 -> top + headerH + gap
-                    index == rows.lastIndex -> footerTop
-                    else -> gridTop + (index - 2) * rowH
-                }
-                val h = when (index) {
-                    0 -> headerH
-                    1 -> categoryH
-                    rows.lastIndex -> footerH
-                    else -> rowH
-                }
+            val contentRows = rows.subList(2, rows.lastIndex)
+            val sectionCount = contentRows.count { row ->
+                row.any { it.second?.style == KeyStyle.SECTION }
+            }
+            val emojiCount = (contentRows.size - sectionCount).coerceAtLeast(0)
+            val sectionH = dpf(24f)
+            val gapsHeight = gap * (contentRows.size + 1)
+            val emojiSpace = (footerTop - gridTop - gapsHeight - sectionH * sectionCount).coerceAtLeast(1f)
+            val emojiRowH = if (emojiCount > 0)
+                (emojiSpace / emojiCount).coerceAtMost(dpf(52f)).coerceAtLeast(dpf(18f))
+            else 0f
+            val usable = (width - dpf(8f)).coerceAtLeast(1f)
+
+            fun placeRow(row: List<Pair<Float, Cell?>>, y: Float, h: Float, index: Int) {
                 val y2 = (y + h).coerceAtMost(bottom)
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
-                val usable = (width - dpf(8f)).coerceAtLeast(1f)
-                val emojiGridRow = index >= 2 && index != rows.lastIndex &&
-                    row.all { it.second?.style == KeyStyle.EMOJI }
+                val nonNull = row.mapNotNull { it.second }
+                val emojiGridRow = nonNull.isNotEmpty() && nonNull.all { it.style == KeyStyle.EMOJI }
                 var x = dpf(4f)
                 row.forEachIndexed { column, (weight, cell) ->
                     val x2 = if (emojiGridRow)
@@ -2263,6 +2283,17 @@ class DroidImeService : InputMethodService() {
                     x = x2
                 }
             }
+
+            placeRow(rows[0], top, headerH, 0)
+            placeRow(rows[1], top + headerH + gap, categoryH, 1)
+            var cursorY = gridTop
+            contentRows.forEachIndexed { index, row ->
+                val isSection = row.any { it.second?.style == KeyStyle.SECTION }
+                val rowH = if (isSection) sectionH else emojiRowH
+                placeRow(row, cursorY, rowH, index + 2)
+                cursorY += rowH + gap
+            }
+            placeRow(rows.last(), footerTop, footerH, rows.lastIndex)
             cells = flat
         }
 
