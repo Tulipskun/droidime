@@ -233,6 +233,8 @@ class DroidImeService : InputMethodService() {
     // After a glide word is committed, the strip offers the runner-up words until the text changes.
     private var glideCommitted: String? = null
     private var glideAlternatives: List<Suggestion> = emptyList()
+    // Keep the active Thai input as an Android composing region so editors underline it.
+    private var thaiComposingText: String = ""
     @Volatile private var dictEn: Dictionary? = null
     @Volatile private var dictTh: Dictionary? = null
 
@@ -536,6 +538,7 @@ class DroidImeService : InputMethodService() {
             language = previousLanguage
         }
         if (!restarting) {
+            finishThaiComposition()
             fieldKind = fieldKindOf(info)
             symbols = false
             symbolPage = 0
@@ -557,6 +560,7 @@ class DroidImeService : InputMethodService() {
         // Safe time to capture a trailing Thai or English word that was typed without ever being
         // followed by a space.
         learnTrailingWord()
+        finishThaiComposition()
         super.onFinishInputView(finishingInput)
     }
 
@@ -638,6 +642,10 @@ class DroidImeService : InputMethodService() {
         candidatesStart: Int, candidatesEnd: Int
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        if (thaiComposingText.isNotEmpty()) {
+            val tail = currentInputConnection?.getTextBeforeCursor(thaiComposingText.length, 0)?.toString()
+            if (tail != thaiComposingText) thaiComposingText = ""
+        }
         updateSuggestions()
     }
 
@@ -953,6 +961,7 @@ class DroidImeService : InputMethodService() {
             else -> word
         }
         if (thai) {
+            finishThaiComposition()
             // Thai has no spaces: the word goes in as is, and the runners-up replace it.
             val word = words[0]
             connection.commitText(word, 1)
@@ -977,6 +986,7 @@ class DroidImeService : InputMethodService() {
 
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
+        finishThaiComposition()
         if (glideCommitted != null) {
             preferences.edit().putInt(GLIDE_ALTERNATIVES, preferences.getInt(GLIDE_ALTERNATIVES, 0) + 1).apply()
             markLastGlideRejected()
@@ -1252,8 +1262,38 @@ class DroidImeService : InputMethodService() {
         updateSuggestions()
     }
 
+    private fun isThaiText(value: String): Boolean =
+        value.isNotEmpty() && value.all { isThai(it) }
+
+    private fun finishThaiComposition() {
+        if (thaiComposingText.isEmpty()) return
+        currentInputConnection?.finishComposingText()
+        thaiComposingText = ""
+    }
+
+    private fun restoreThaiComposition() {
+        val connection = currentInputConnection ?: return
+        val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+        var start = before.length
+        while (start > 0 && isThai(before[start - 1])) start--
+        val trailing = before.substring(start)
+        if (trailing.isNotEmpty()) {
+            connection.setComposingText(trailing, 1)
+            thaiComposingText = trailing
+        }
+    }
+
     private fun typeText(value: String) {
-        currentInputConnection?.commitText(value, 1)
+        val connection = currentInputConnection
+        if (connection != null) {
+            if (language == Language.THAI && isThaiText(value)) {
+                thaiComposingText += value
+                connection.setComposingText(thaiComposingText, 1)
+            } else {
+                finishThaiComposition()
+                connection.commitText(value, 1)
+            }
+        }
         afterTextChanged()
     }
 
@@ -1366,12 +1406,14 @@ class DroidImeService : InputMethodService() {
         lastSpaceTap = now
         // A word followed by a space is committed, so capture it for the personal dictionary.
         learnTrailingWord()
+        finishThaiComposition()
         typeText(" ")
     }
 
     private fun deleteOne(updateShift: Boolean = true) {
         val connection = currentInputConnection ?: return
         markLastTouchCorrected()
+        finishThaiComposition()
         // A word just produced by a glide (or picked from the strip) sits whole before the
         // cursor. Taking it back in one press matches Gboard, where delete removes the word the
         // suggestion strip just offered rather than its last character. This applies to the first
@@ -1396,6 +1438,7 @@ class DroidImeService : InputMethodService() {
         } else {
             connection.deleteSurroundingText(1, 0)
         }
+        restoreThaiComposition()
         if (updateShift) afterTextChanged()
     }
 
