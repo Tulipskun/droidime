@@ -122,6 +122,7 @@ class KeyboardRenderTest {
         }
 
         val emojiCategory = Class.forName("com.tulipskun.droidime.DroidImeService\$EmojiCategory")
+        service.setField("recentEmojis", ArrayList(listOf("😀", "😂", "🥰", "👍", "❤️", "🐶", "🍕", "🚀", "🤔")))
         service.setField("clipPanelVisible", false)
         service.setField("emojiPanelVisible", true)
         for (category in emojiCategory.enumConstants!!) {
