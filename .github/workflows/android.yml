@@ -68,7 +68,7 @@ jobs:
             gradle --no-daemon assembleRelease
           fi
       - name: Replace the single latest release
-        if: false
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
