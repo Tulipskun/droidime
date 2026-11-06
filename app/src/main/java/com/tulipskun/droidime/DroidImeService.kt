@@ -1823,7 +1823,7 @@ class DroidImeService : InputMethodService() {
             if (recent.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("Recent")))
                 recent.chunked(2).forEach { group ->
-                    rows.add(group.map { 1f to clipCell(it.id) } + if (group.size == 1) listOf(1f to null) else emptyList())
+                    rows.add(group.map { 1f to clipCell(it.id) } + List(2 - group.size) { 1f to null })
                 }
             }
             return rows
