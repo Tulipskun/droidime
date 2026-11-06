@@ -82,13 +82,26 @@ class DroidImeService : InputMethodService() {
         // the mark-free key of "สวัสดี".
         val strippedIndex: HashMap<String, Int>
         private val prefixIndex: HashMap<String, IntArray>
+        private val glideIndex: HashMap<Int, IntArray>
+        private val strippedWords: Array<String>
+        val maxFrequency: Int
 
         init {
             val index = HashMap<String, Int>()
             val prefixes = HashMap<String, ArrayList<Int>>()
+            val glideBuckets = HashMap<Int, ArrayList<Int>>()
+            val stripped = Array(words.size) { "" }
+            fun addGlideVariant(value: String, wordIndex: Int) {
+                if (value.length < 2) return
+                val key = (value.first().code shl 16) or value.last().code
+                glideBuckets.getOrPut(key) { ArrayList() }.add(wordIndex)
+            }
             for (i in words.indices) {
                 val word = words[i]
                 val key = word.filterNot { it in THAI_MARKS }
+                stripped[i] = key
+                addGlideVariant(word, i)
+                if (key != word) addGlideVariant(key, i)
                 val current = index[key]
                 if (current == null || freqs[i] > freqs[current]) index[key] = i
 
@@ -107,8 +120,21 @@ class DroidImeService : InputMethodService() {
                 }
             }
             strippedIndex = index
+            strippedWords = stripped
             prefixIndex = HashMap(prefixes.size)
             for ((prefix, indices) in prefixes) prefixIndex[prefix] = indices.toIntArray()
+            glideIndex = HashMap(glideBuckets.size)
+            for ((key, indices) in glideBuckets) glideIndex[key] = indices.toIntArray()
+            maxFrequency = freqs.maxOrNull() ?: 1
+        }
+
+        fun glideCandidates(firstKeys: Set<Char>, lastKeys: Set<Char>): IntArray {
+            val found = LinkedHashSet<Int>()
+            for (first in firstKeys) for (last in lastKeys) {
+                val key = (first.code shl 16) or last.code
+                glideIndex[key]?.forEach { found.add(it) }
+            }
+            return found.toIntArray()
         }
 
         private fun lowerBound(prefix: String): Int {
@@ -853,8 +879,7 @@ class DroidImeService : InputMethodService() {
         val firstKeys = near(xs.first(), ys.first())
         val lastKeys = near(xs.last(), ys.last())
         if (firstKeys.isEmpty() || lastKeys.isEmpty()) return emptyList()
-        var maxFreq = 1
-        if (dict != null) for (f in dict.freqs) if (f > maxFreq) maxFreq = f
+        val maxFreq = dict?.maxFrequency ?: 1
         // The first and last few points count five times as much: where a glide starts and ends
         // says most about the word (tuned on simulated glides over the dictionary, ~93% top-1).
         val pointWeights = FloatArray(n) { if (it < 3 || it >= n - 3) 5f else 1f }
@@ -888,11 +913,11 @@ class DroidImeService : InputMethodService() {
             return if (distance > 2.9f) -1f else distance
         }
         val scored = ArrayList<Pair<Float, String>>()
-        if (dict != null) for (i in dict.words.indices) {
+        if (dict != null) for (i in dict.glideCandidates(firstKeys, lastKeys)) {
             val word = dict.words[i]
             var best = variantDistance(word)
             if (thai) {
-                val reduced = word.filterNot { it in THAI_MARKS }
+                val reduced = dict.strippedWords[i]
                 if (reduced.length != word.length) {
                     val d = variantDistance(reduced)
                     if (d >= 0f && (best < 0f || d + 0.1f < best)) best = d + 0.1f
@@ -1239,11 +1264,13 @@ class DroidImeService : InputMethodService() {
         }.toMutableList()
     }
 
-    private fun saveTouchEvent(event: JSONObject) {
-        if (fieldKind == FieldKind.PASSWORD || fieldKind == FieldKind.NUMBER ||
+    private fun saveTouchEvent(event: JSONObject) = saveTouchEvents(listOf(event))
+
+    private fun saveTouchEvents(newEvents: List<JSONObject>) {
+        if (newEvents.isEmpty() || fieldKind == FieldKind.PASSWORD || fieldKind == FieldKind.NUMBER ||
             fieldKind == FieldKind.PHONE || fieldKind == FieldKind.EMAIL || fieldKind == FieldKind.URL) return
         val events = touchHistory()
-        events.add(event)
+        events.addAll(newEvents)
         while (events.size > 3000) events.removeAt(0)
         preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
         lastTouchEventAt = SystemClock.elapsedRealtime()
@@ -1288,15 +1315,16 @@ class DroidImeService : InputMethodService() {
     private fun recordGlidePath(points: List<Pair<Float, Float>>, viewWidth: Int, viewHeight: Int, rejected: Boolean) {
         if (fieldKind != FieldKind.TEXT || viewWidth <= 0 || viewHeight <= 0 || points.isEmpty()) return
         val now = System.currentTimeMillis()
-        points.forEachIndexed { index, point ->
-            saveTouchEvent(JSONObject()
+        val events = points.mapIndexed { index, point ->
+            JSONObject()
                 .put("type", "glide_point")
                 .put("time", now)
                 .put("index", index)
                 .put("x", point.first / viewWidth)
                 .put("y", point.second / viewHeight)
-                .put("rejected", rejected))
+                .put("rejected", rejected)
         }
+        saveTouchEvents(events)
     }
 
     private fun markLastGlideRejected() {
@@ -2520,7 +2548,9 @@ class DroidImeService : InputMethodService() {
                         addGlidePoint(event.x, event.y)
                         val xs = glideX.toFloatArray()
                         val ys = glideY.toFloatArray()
-                        recordGlidePath(glideX.indices.map { glideX[it] to glideY[it] }, width, height, false)
+                        val points = glideX.indices.map { glideX[it] to glideY[it] }
+                        val viewWidth = width
+                        val viewHeight = height
                         glideActive = false
                         glideStartCell = null
                         glideX.clear()
@@ -2534,6 +2564,7 @@ class DroidImeService : InputMethodService() {
                         val connection = currentInputConnection
                         val textBefore = connection?.getTextBeforeCursor(64, 0)?.toString()
                         Thread {
+                            recordGlidePath(points, viewWidth, viewHeight, false)
                             val words = glideCandidates(xs, ys, centers, keyWidth, thai, learned)
                             settingsHandler.post {
                                 if (connection != null && currentInputConnection === connection &&
