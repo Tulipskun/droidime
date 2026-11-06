@@ -81,15 +81,34 @@ class DroidImeService : InputMethodService() {
         // wording that builds it. Thai typing often drops marks, so "สวสด" is found by looking up
         // the mark-free key of "สวัสดี".
         val strippedIndex: HashMap<String, Int>
+        private val prefixIndex: HashMap<String, IntArray>
 
         init {
             val index = HashMap<String, Int>()
+            val prefixes = HashMap<String, ArrayList<Int>>()
             for (i in words.indices) {
-                val key = words[i].filterNot { it in THAI_MARKS }
+                val word = words[i]
+                val key = word.filterNot { it in THAI_MARKS }
                 val current = index[key]
                 if (current == null || freqs[i] > freqs[current]) index[key] = i
+
+                // Short prefixes are queried on every keystroke and can match thousands of
+                // entries. Cache their eight most frequent completions instead of rescanning
+                // the entire dictionary on the UI thread.
+                for (length in 1..minOf(4, word.length - 1)) {
+                    val prefix = word.substring(0, length)
+                    val best = prefixes.getOrPut(prefix) { ArrayList(8) }
+                    var position = best.size
+                    while (position > 0 && freqs[best[position - 1]] < freqs[i]) position--
+                    if (position < 8) {
+                        best.add(position, i)
+                        if (best.size > 8) best.removeAt(8)
+                    }
+                }
             }
             strippedIndex = index
+            prefixIndex = HashMap(prefixes.size)
+            for ((prefix, indices) in prefixes) prefixIndex[prefix] = indices.toIntArray()
         }
 
         private fun lowerBound(prefix: String): Int {
@@ -131,6 +150,8 @@ class DroidImeService : InputMethodService() {
 
         // Indices of the `limit` most frequent words that start with `prefix` and are longer.
         fun complete(prefix: String, limit: Int): List<Int> {
+            if (limit <= 0) return emptyList()
+            if (prefix.length <= 4) return prefixIndex[prefix]?.take(limit) ?: emptyList()
             val best = ArrayList<Int>()
             var i = lowerBound(prefix)
             while (i < words.size && words[i].startsWith(prefix)) {
