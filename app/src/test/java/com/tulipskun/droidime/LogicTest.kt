@@ -80,6 +80,14 @@ class LogicTest {
         assertFalse(call(service, "clipOpen") as Boolean)
     }
 
+    @Test fun thaiComposingInputAcceptsThaiMarksButNotBoundaries() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        assertTrue(call(service, "isThaiText", "ภาษาไทย") as Boolean)
+        assertTrue(call(service, "isThaiText", "กำลัง") as Boolean)
+        assertFalse(call(service, "isThaiText", "ไทย ") as Boolean)
+        assertFalse(call(service, "isThaiText", "ไทยๆ") as Boolean == false)
+    }
+
     @Test fun thaiSuggestionsOrdersByScore() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val dict = javaClass.classLoader.let {
