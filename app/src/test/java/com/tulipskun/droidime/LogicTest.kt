@@ -107,4 +107,16 @@ class LogicTest {
         assertEquals("test", getField(out[0]!!, "text"))
         assertEquals(3, out.size)
     }
+
+    @Test fun expandedDictionariesContainThaiEnglishSlangAndProfanity() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val english = call(service, "loadDictionary", "words_en.txt")!!
+        val thai = call(service, "loadDictionary", "words_th.txt")!!
+        for (word in listOf("rizz", "delulu", "fuck", "asshole")) {
+            assertTrue("missing English word: $word", (call(english, "indexOf", word) as Int) >= 0)
+        }
+        assertTrue("missing Royal Institute Thai word", (call(thai, "indexOf", "กกช้าง") as Int) >= 0)
+        assertTrue((getField(english, "words") as Array<*>).size >= 65000)
+        assertTrue((getField(thai, "words") as Array<*>).size >= 31000)
+    }
 }
