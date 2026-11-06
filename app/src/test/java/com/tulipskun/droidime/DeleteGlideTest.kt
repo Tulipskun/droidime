@@ -55,4 +55,36 @@ class DeleteGlideTest {
         call(service, "deleteOne", false)
         assertEquals("hell", connection.getTextBeforeCursor(20, 0).toString())
     }
+    @Test fun deleteKeepsThaiComposingRegionAndDoesNotRestoreStaleText() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())
+        val connection = BaseInputConnection(editor, true)
+        setField(service, "mInputConnection", connection)
+        setField(service, "glideCommitted", null)
+        connection.setComposingText("ก้ข", 1)
+        setField(service, "thaiComposingText", "ก้ข")
+
+        call(service, "deleteOne", false)
+        assertEquals("ก้", connection.getTextBeforeCursor(20, 0).toString())
+        assertEquals("ก้", getField(service, "thaiComposingText"))
+
+        call(service, "deleteOne", false)
+        assertEquals("ก", connection.getTextBeforeCursor(20, 0).toString())
+        assertEquals("ก", getField(service, "thaiComposingText"))
+
+        call(service, "deleteOne", false)
+        assertEquals("", connection.getTextBeforeCursor(20, 0).toString())
+        assertEquals("", getField(service, "thaiComposingText"))
+    }
+
+    private fun getField(target: Any, name: String): Any? {
+        var c: Class<*>? = target.javaClass
+        while (c != null) {
+            val f = c.declaredFields.firstOrNull { it.name == name }
+            if (f != null) { f.isAccessible = true; return f.get(target) }
+            c = c.superclass
+        }
+        throw NoSuchFieldException(name)
+    }
+
 }
