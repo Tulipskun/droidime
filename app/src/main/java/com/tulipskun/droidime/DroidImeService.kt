@@ -214,9 +214,11 @@ class DroidImeService : InputMethodService() {
         key = Color.WHITE,
         special = Color.rgb(194, 202, 216),
         active = Color.rgb(143, 163, 209),
-        enter = Color.rgb(91, 119, 180),
+        // Gboard's light theme uses a pale blue action key with dark blue ink rather than
+        // the high-contrast indigo button used by the earlier DroidIME palette.
+        enter = Color.rgb(194, 231, 255),
         text = Color.rgb(34, 39, 49),
-        enterText = Color.WHITE,
+        enterText = Color.rgb(4, 46, 111),
         hint = Color.rgb(105, 113, 128)
     )
     // Dark values are sampled from Gboard's dark theme: special keys (shift, delete, ?123, enter,
