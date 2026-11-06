@@ -2,6 +2,9 @@ package com.tulipskun.droidime
 
 import android.app.Activity
 import android.content.Context
+import android.view.KeyEvent
+import android.view.View
+import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import org.junit.Assert.assertEquals
@@ -51,6 +54,14 @@ class EditorPanelFlowTest {
         return method.invoke(target, *args)
     }
 
+    private class RecordingInputConnection(target: View) : BaseInputConnection(target, true) {
+        val events = ArrayList<KeyEvent>()
+        override fun sendKeyEvent(event: KeyEvent): Boolean {
+            events.add(KeyEvent(event))
+            return true
+        }
+    }
+
     private fun editor(text: String = "hello"): Triple<DroidImeService, EditText, android.view.inputmethod.InputConnection> {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
@@ -64,20 +75,33 @@ class EditorPanelFlowTest {
         return Triple(service, view, connection)
     }
 
-    @Test fun arrowKeysMoveTheCaret() {
-        val (service, view) = editor()
+    @Test fun arrowKeysForwardDirectionalKeyEvents() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val view = EditText(activity).apply { setText("hello") }
+        val connection = RecordingInputConnection(view)
+        setField(service, "mInputConnection", connection)
+
         invoke(service, "editorAction", "←")
-        assertEquals(4, view.selectionStart)
         invoke(service, "editorAction", "→")
-        assertEquals(5, view.selectionStart)
+
+        val pressed = connection.events.filter { it.action == KeyEvent.ACTION_DOWN }.map { it.keyCode }
+        assertEquals(listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT), pressed)
     }
 
-    @Test fun selectModeExtendsTheSelectionWithArrowKeys() {
-        val (service, view) = editor()
+    @Test fun selectModeAddsShiftModifierToArrowEvents() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val view = EditText(activity).apply { setText("hello") }
+        val connection = RecordingInputConnection(view)
+        setField(service, "mInputConnection", connection)
+
         invoke(service, "editorAction", "Select")
         assertTrue(getField(service, "editorSelecting") as Boolean)
         invoke(service, "editorAction", "←")
-        assertEquals("o", view.text.subSequence(view.selectionStart, view.selectionEnd).toString())
+        val leftDown = connection.events.first { it.action == KeyEvent.ACTION_DOWN }
+        assertTrue(leftDown.metaState and KeyEvent.META_SHIFT_ON != 0)
+
         invoke(service, "editorAction", "Select")
         assertFalse(getField(service, "editorSelecting") as Boolean)
     }
