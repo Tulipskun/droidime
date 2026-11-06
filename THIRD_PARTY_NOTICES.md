@@ -48,3 +48,13 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ### English slang list
 
 The [slanglate repository](https://github.com/codeclawd/slanglate) identifies its project as MIT licensed. The vocabulary keys are used as individual words only; the upstream repository contains the corresponding license statement in its README.
+
+
+## Additional Thai vocabulary
+
+- **Thai supplementary word list**: 14,381 source entries from [kamthorn/thai-break-dict-extra](https://github.com/kamthorn/thai-break-dict-extra), merged after filtering entries unsuitable for single-word keyboard suggestions and deduplicating against the existing dictionary. The repository's own curated material is dedicated to the public domain under CC0 1.0. Its README documents upstream components: PyThaiNLP Thai2fit and Wisesight-derived slang (CC0 1.0); Thai legal terms (public domain); Thai administrative geography names from thailand-geography-json (MIT, Joe Takara); and Thai Wikipedia page titles used only as names (CC BY-SA 4.0). The source repository documents these components and their reuse terms at [its data-source and license notes](https://github.com/kamthorn/thai-break-dict-extra#-ที่มาของข้อมูลและสัญญาอนุญาต-data-sources--licenses).
+- **Thai slang and internet vocabulary**: single-word entries from the slang list in [thai-break-dict-extra](https://github.com/kamthorn/thai-break-dict-extra/tree/main/data/slang), under the source repository's CC0 1.0 dedication. Multiword phrases are not added because the keyboard dictionary indexes individual words.
+- **Thai profanity vocabulary**: entries from [PyThaiNLP/lexicon-thai](https://github.com/PyThaiNLP/lexicon-thai/tree/master/swear-words), licensed CC BY-SA 4.0. The dataset was created by Wannaphong Phatthiyaphaibun. Attribution: “Thai swear words list”, PyThaiNLP/lexicon-thai.
+- **Thai abbreviation vocabulary**: abbreviations and their expanded forms from [PyThaiNLP/lexicon-thai](https://github.com/PyThaiNLP/lexicon-thai/tree/master/thai-abbreviation), licensed CC BY-SA 4.0. The dataset was created by Wannaphong Phatthiyaphaibun. Attribution: “Thai Abbreviation”, PyThaiNLP/lexicon-thai.
+
+These additions are vocabulary terms only. They do not include dictionary definitions, example sentences, or source corpus text. The merged Thai asset is distributed with the applicable source attributions and license terms above.
