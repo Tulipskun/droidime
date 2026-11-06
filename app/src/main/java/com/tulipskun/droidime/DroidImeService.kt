@@ -48,7 +48,7 @@ class DroidImeService : InputMethodService() {
     private enum class FieldKind { TEXT, EMAIL, URL, PASSWORD, NUMBER, PHONE }
 
     private enum class KeyStyle {
-        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY, EMOJI_FOOTER
+        NORMAL, SPECIAL, ACTIVE, SPACE, ENTER, TOOLBAR, SUGGESTION, CLIP, HEADER, HEADER_CLOSE, SECTION, EMOJI, EMOJI_CATEGORY, EMOJI_FOOTER, EMOJI_SEARCH
     }
     private enum class EmojiCategory(val title: String, val icon: String, val items: List<String>) {
         RECENT("Recent", "🕘", emptyList()),
@@ -1746,6 +1746,7 @@ class DroidImeService : InputMethodService() {
             super.onDraw(canvas)
             canvas.drawColor(palette.background)
             cells.forEach { drawCell(canvas, it) }
+            if (clipOpen() && clipMenuId != null) drawClipMenu(canvas, palette)
             if (glideActive && glideX.size > 1) {
                 val trail = Path()
                 trail.moveTo(glideX[0], glideY[0])
@@ -1824,9 +1825,9 @@ class DroidImeService : InputMethodService() {
             return listOf(grid) + middle + cursor
         }
 
-        // The clipboard panel: a header (title, edit, close), then one row per clip. Pinned clips
-        // come first with a pin marker, like Gboard's two sections. Rows are full-width and their
-        // height is the panel height divided among them, so the panel always fills the keyboard.
+        // The clipboard panel: a header (close arrow, edit action), then one full-width card per
+        // clip. Pinned clips come first with a pin marker at the card's right edge, then recent
+        // copies — the same two sections Gboard shows.
         private fun buildClipRows(): List<List<Pair<Float, Cell?>>> {
             val rows = mutableListOf<List<Pair<Float, Cell?>>>()
             val panel = clipsForPanel()
@@ -1839,15 +1840,11 @@ class DroidImeService : InputMethodService() {
             }
             if (pinned.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("Pinned")))
-                pinned.chunked(2).forEach { group ->
-                    rows.add(group.map { 1f to clipCell(it.id) } + List(2 - group.size) { 1f to null })
-                }
+                pinned.forEach { clip -> rows.add(listOf(1f to clipCell(clip.id))) }
             }
             if (recent.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("Recent")))
-                recent.chunked(2).forEach { group ->
-                    rows.add(group.map { 1f to clipCell(it.id) } + List(2 - group.size) { 1f to null })
-                }
+                recent.forEach { clip -> rows.add(listOf(1f to clipCell(clip.id))) }
             }
             return rows
         }
@@ -1869,22 +1866,14 @@ class DroidImeService : InputMethodService() {
         private fun emptyCell(): Cell =
             Cell("No copies yet", KeyStyle.CLIP, null, action = {})
 
-        // A clip row. The long-press menu (the way Gboard opens it) is drawn inside the row, and
-        // the pin state is shown with a marker at the left edge.
+        // A clip card. Tapping pastes (or toggles selection in edit mode); long-press opens the
+        // popup menu, drawn as a floating card over the panel the way Gboard does.
         private fun clipCell(id: String): Cell {
             val clip = clips.firstOrNull { found -> found.id == id } ?: return emptyCell()
             val menu = clipMenuId == id
             val selected = clipSelection == id
-            // Only the actions that apply to this clip are offered: an unpinned clip can be
-            // pinned, a pinned one unpinned, and either can be deleted.
-            val menuLabel = if (clip.pinned) "Unpin\nDelete" else "Pin\nDelete"
-            val label = when {
-                menu -> menuLabel
-                selected -> "✓ ${clipPreview(clip.text)}"
-                else -> clipPreview(clip.text)
-            }
             return Cell(
-                label, KeyStyle.CLIP, null,
+                clipPreview(clip.text), KeyStyle.CLIP, null,
                 clipId = id,
                 action = {
                     when {
@@ -2184,16 +2173,23 @@ class DroidImeService : InputMethodService() {
             this.cells = flat
         }
 
+        // Gboard keeps clip cards at a fixed height and lets the list end where the clips end.
+        // The long-press popup belongs to its card's touch area, and that card moves to the front
+        // of the hit list so the popup wins over any card it covers.
         private fun layoutClipRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
-            val padBottom = dpf(8f) + navigationInset
-            val availH = (height - dpf(CLIP_PAD_TOP_DP) - padBottom).coerceAtLeast(1f)
-            val headerH = dpf(CLIP_HEADER_DP); val gap = dpf(4f)
-            val bodyRows = (rows.size - 1).coerceAtLeast(1)
-            val rowH = ((availH - headerH - gap * (rows.size - 1)) / bodyRows).coerceAtLeast(dpf(20f))
+            val headerH = dpf(CLIP_HEADER_DP)
+            val sectionH = dpf(26f)
+            val cardH = dpf(48f)
+            val gap = dpf(6f)
             var top = dpf(CLIP_PAD_TOP_DP)
             rows.forEachIndexed { index, row ->
-                val h = if (index == 0) headerH else rowH
-                val bottom = (top + h).coerceAtMost((height - padBottom).coerceAtLeast(top + 1f))
+                val first = row.firstOrNull { it.second != null }?.second
+                val h = when {
+                    index == 0 -> headerH
+                    first?.style == KeyStyle.SECTION -> sectionH
+                    else -> cardH
+                }
+                val bottom = top + h
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
                 val leftEdge = dpf(8f); val usableWidth = (width - dpf(16f)).coerceAtLeast(1f)
                 var left = leftEdge
@@ -2202,20 +2198,38 @@ class DroidImeService : InputMethodService() {
                     if (cell != null) {
                         cell.rect.set(left, top, right, bottom)
                         val bandTop = if (index == 0) 0f else top - gap / 2f
-                        val bandBottom = if (index == rows.lastIndex) height.toFloat() else bottom + gap / 2f
+                        val bandBottom = (bottom + gap / 2f).coerceAtMost(height.toFloat())
                         cell.touchRect.set(left, bandTop, right, bandBottom); flat.add(cell)
                     }
                     left = right
                 }
                 top = bottom + gap
             }
+            val menuCard = clipMenuId?.let { id -> flat.firstOrNull { it.clipId == id } }
+            if (menuCard != null) {
+                menuCard.touchRect.union(clipMenuRect(menuCard.rect))
+                flat.remove(menuCard)
+                flat.add(0, menuCard)
+            }
             cells = flat
+        }
+
+        // The floating long-press menu over a clip card: Pin/Unpin and Delete, like Gboard's.
+        private fun clipMenuRect(card: RectF): RectF {
+            val w = dpf(150f)
+            val rowH = dpf(40f)
+            val h = rowH * 2f
+            val cx = card.centerX().coerceIn(w / 2f + dpf(4f), width - w / 2f - dpf(4f))
+            var top = card.top - dpf(6f) - h
+            if (top < dpf(4f)) top = card.bottom + dpf(6f)
+            return RectF(cx - w / 2f, top, cx + w / 2f, top + h)
         }
 
         private fun buildEmojiRows(): List<List<Pair<Float, Cell?>>> {
             val rows = mutableListOf<List<Pair<Float, Cell?>>>()
-            rows.add(listOf(1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() }),
-                3f to Cell("Search", KeyStyle.CLIP, null, action = { showEmojiSearch() })))
+            // Gboard's emoji header: a full-width search pill with the close arrow to its right.
+            rows.add(listOf(3f to Cell("Search emojis", KeyStyle.EMOJI_SEARCH, null, action = { showEmojiSearch() }),
+                1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() })))
             rows.add(EmojiCategory.values().map { category ->
                 1f to Cell(category.icon, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
             })
@@ -2223,11 +2237,11 @@ class DroidImeService : InputMethodService() {
                 rows.add(listOf(1f to Cell(title, KeyStyle.SECTION, null, action = {})))
             }
             fun addEmojiGrid(items: List<String>) {
-                items.chunked(8).forEach { group ->
+                items.chunked(EMOJI_COLUMNS).forEach { group ->
                     val cells = group.map { emoji ->
                         1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) })
                     }
-                    rows.add(cells + List(8 - group.size) { 1f to null })
+                    rows.add(cells + List(EMOJI_COLUMNS - group.size) { 1f to null })
                 }
             }
             when {
@@ -2260,7 +2274,7 @@ class DroidImeService : InputMethodService() {
                     emojiCategory = if (recentEmojis.isNotEmpty()) EmojiCategory.RECENT else EmojiCategory.FACES
                     renderKeyboard()
                 }),
-                1f to Cell("Delete", KeyStyle.EMOJI_FOOTER, null, action = { deleteOne() })
+                1f to Cell("", KeyStyle.EMOJI_FOOTER, null, glyph = KeyGlyph.DELETE, action = { deleteOne() })
             ))
             return rows
         }
@@ -2296,7 +2310,7 @@ class DroidImeService : InputMethodService() {
                 var x = dpf(4f)
                 row.forEachIndexed { column, (weight, cell) ->
                     val x2 = if (emojiGridRow)
-                        dpf(4f) + (column + 1) * (usable / 8f)
+                        dpf(4f) + (column + 1) * (usable / EMOJI_COLUMNS.toFloat())
                     else x + usable * weight / totalWeight
                     if (cell != null) {
                         cell.rect.set(x, y, x2, y2)
@@ -2330,6 +2344,10 @@ class DroidImeService : InputMethodService() {
                 shape.cornerRadius = if (cell.style == KeyStyle.EMOJI_CATEGORY) cell.rect.height() / 2f else dpf(12f)
                 shape.draw(canvas)
             }
+            if (cell.glyph != null) {
+                drawKeyGlyph(canvas, cell, cell.glyph, colors.text)
+                return
+            }
             textPaint.color = if (selectedCategory || selectedFooter) colors.enterText
                 else if (cell.style == KeyStyle.EMOJI_FOOTER) colors.hint else colors.text
             textPaint.typeface = if (cell.style == KeyStyle.EMOJI_CATEGORY) mediumFace else Typeface.DEFAULT
@@ -2344,6 +2362,31 @@ class DroidImeService : InputMethodService() {
             textPaint.typeface = Typeface.DEFAULT
         }
 
+        // Gboard's emoji search bar: a full-width pill with a magnifier and a muted hint.
+        private fun drawEmojiSearchCell(canvas: Canvas, cell: Cell, colors: Palette) {
+            shape.setColor(if (cell === pressed) colors.special else colors.key)
+            shape.setBounds(
+                cell.rect.left.toInt(), (cell.rect.top + dpf(2f)).toInt(),
+                cell.rect.right.toInt(), (cell.rect.bottom - dpf(2f)).toInt()
+            )
+            shape.cornerRadius = cell.rect.height() / 2f
+            shape.draw(canvas)
+            val cy = cell.rect.centerY()
+            val ix = cell.rect.left + dpf(18f)
+            iconStroke.color = colors.hint
+            iconStroke.strokeWidth = dpf(1.6f)
+            val r = dpf(4.5f)
+            canvas.drawCircle(ix, cy - r * 0.3f, r, iconStroke)
+            canvas.drawLine(ix + r * 0.7f, cy + r * 0.5f, ix + r * 1.4f, cy + r * 1.2f, iconStroke)
+            textPaint.color = colors.hint
+            textPaint.typeface = Typeface.DEFAULT
+            textPaint.textSize = dpf(14f)
+            textPaint.textAlign = Paint.Align.LEFT
+            val m = textPaint.fontMetrics
+            canvas.drawText(cell.label, cell.rect.left + dpf(32f), cy - (m.ascent + m.descent) / 2f, textPaint)
+            textPaint.textAlign = Paint.Align.CENTER
+        }
+
         private fun drawCell(canvas: Canvas, cell: Cell) {
             val colors = palette
             if (cell.style == KeyStyle.TOOLBAR) {
@@ -2356,6 +2399,7 @@ class DroidImeService : InputMethodService() {
             }
             if (cell.style == KeyStyle.EMOJI || cell.style == KeyStyle.EMOJI_CATEGORY ||
                 cell.style == KeyStyle.EMOJI_FOOTER) { drawEmojiPanelCell(canvas, cell, colors); return }
+            if (cell.style == KeyStyle.EMOJI_SEARCH) { drawEmojiSearchCell(canvas, cell, colors); return }
             if (cell.style == KeyStyle.CLIP || cell.style == KeyStyle.HEADER ||
                 cell.style == KeyStyle.HEADER_CLOSE || cell.style == KeyStyle.SECTION
             ) {
@@ -2371,7 +2415,7 @@ class DroidImeService : InputMethodService() {
                     KeyStyle.ENTER -> colors.enter
                     KeyStyle.TOOLBAR, KeyStyle.SUGGESTION, KeyStyle.CLIP, KeyStyle.HEADER,
                     KeyStyle.HEADER_CLOSE, KeyStyle.SECTION, KeyStyle.EMOJI, KeyStyle.EMOJI_CATEGORY,
-                    KeyStyle.EMOJI_FOOTER -> colors.background
+                    KeyStyle.EMOJI_FOOTER, KeyStyle.EMOJI_SEARCH -> colors.background
                 }
             )
             shape.setBounds(
@@ -2542,8 +2586,9 @@ class DroidImeService : InputMethodService() {
             canvas.drawText(text, cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
         }
 
-        // Clipboard panel rows. A clip row is a rounded card with the text left-aligned and, when
-        // pinned, a pin marker; the long-press menu replaces the row's text with its actions.
+        // Clipboard panel rows. A clip card is a rounded rectangle with the text left-aligned;
+        // pinned clips carry a pin marker at the right edge and selected ones a check circle.
+        // The long-press menu is a floating popup drawn over the panel, as in Gboard.
         private fun drawClipCell(canvas: Canvas, cell: Cell, colors: Palette) {
             val ink = colors.text
             if (cell.style == KeyStyle.SECTION) {
@@ -2568,26 +2613,34 @@ class DroidImeService : InputMethodService() {
                 iconStroke.strokeCap = Paint.Cap.ROUND
                 val arm = dpf(7f)
                 val head = dpf(6f)
-                canvas.drawLine(cx + arm, cy, cx - arm, cy, iconStroke)
-                canvas.drawLine(cx - arm, cy, cx - arm + head, cy - head, iconStroke)
-                canvas.drawLine(cx - arm, cy, cx - arm + head, cy + head, iconStroke)
+                if (emojiPanelVisible) {
+                    // Gboard's emoji panel closes with a keyboard-hide (down) arrow.
+                    canvas.drawLine(cx, cy - arm, cx, cy + arm - head, iconStroke)
+                    canvas.drawLine(cx, cy + arm, cx - head, cy + arm - head, iconStroke)
+                    canvas.drawLine(cx, cy + arm, cx + head, cy + arm - head, iconStroke)
+                } else {
+                    canvas.drawLine(cx + arm, cy, cx - arm, cy, iconStroke)
+                    canvas.drawLine(cx - arm, cy, cx - arm + head, cy - head, iconStroke)
+                    canvas.drawLine(cx - arm, cy, cx - arm + head, cy + head, iconStroke)
+                }
                 iconStroke.strokeCap = Paint.Cap.BUTT
                 return
             }
             if (cell.style == KeyStyle.HEADER) {
-                // Header: title on the left, the action (edit/clear) on the right.
+                // Gboard's clipboard header shows only the action; other panels keep a title.
                 textPaint.color = ink
                 textPaint.typeface = mediumFace
                 textPaint.textSize = dpf(16f)
                 val m = textPaint.fontMetrics
                 val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
-                textPaint.textAlign = Paint.Align.LEFT
-                val title = when {
-                    editorPanelVisible -> "Text editing"
-                    emojiPanelVisible -> "Emoji"
-                    else -> "Clipboard"
+                if (!clipPanelVisible) {
+                    val title = when {
+                        editorPanelVisible -> "Text editing"
+                        else -> "Clipboard"
+                    }
+                    textPaint.textAlign = Paint.Align.LEFT
+                    canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
                 }
-                canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.RIGHT
                 canvas.drawText(cell.label, cell.rect.right - dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.CENTER
@@ -2595,13 +2648,12 @@ class DroidImeService : InputMethodService() {
                 return
             }
             val selected = cell.clipId != null && clipSelection == cell.clipId
-            val menu = cell.clipId != null && clipMenuId == cell.clipId
-            shape.setColor(if (selected) colors.active else colors.key)
+            shape.setColor(if (cell === pressed) colors.special else colors.key)
             shape.setBounds(
-                (cell.rect.left + dpf(6f)).toInt(), (cell.rect.top + dpf(2f)).toInt(),
-                (cell.rect.right - dpf(6f)).toInt(), (cell.rect.bottom - dpf(2f)).toInt()
+                cell.rect.left.toInt(), (cell.rect.top + dpf(2f)).toInt(),
+                cell.rect.right.toInt(), (cell.rect.bottom - dpf(2f)).toInt()
             )
-            shape.cornerRadius = cornerRadius
+            shape.cornerRadius = dpf(14f)
             shape.draw(canvas)
             if (editorPanelVisible && cell.label in setOf("←", "→", "↑", "↓")) {
                 val cx = cell.rect.centerX()
@@ -2637,27 +2689,31 @@ class DroidImeService : InputMethodService() {
                 return
             }
             val clip = clips.firstOrNull { it.id == cell.clipId }
-            if (clip != null && clip.pinned) {
-                iconFill.color = colors.hint
-                val px = cell.rect.left + dpf(16f)
+            if (selected) {
+                // Edit mode marks the chosen clip with a filled check circle on the right edge.
+                val r = dpf(9f)
+                val px = cell.rect.right - dpf(20f)
                 val py = cell.rect.centerY()
-                canvas.drawCircle(px, py - dpf(2f), dpf(2.2f), iconFill)
-                canvas.drawLine(px, py, px, py + dpf(4f), iconFill)
+                iconFill.color = colors.enter
+                canvas.drawCircle(px, py, r, iconFill)
+                iconStroke.color = colors.enterText
+                iconStroke.strokeWidth = dpf(1.8f)
+                iconStroke.strokeCap = Paint.Cap.ROUND
+                canvas.drawLine(px - r * 0.5f, py, px - r * 0.1f, py + r * 0.4f, iconStroke)
+                canvas.drawLine(px - r * 0.1f, py + r * 0.4f, px + r * 0.55f, py - r * 0.45f, iconStroke)
+                iconStroke.strokeCap = Paint.Cap.BUTT
+            } else if (clip != null && clip.pinned) {
+                // Pin marker at the right edge of the card, as Gboard shows it.
+                iconFill.color = colors.hint
+                iconStroke.color = colors.hint
+                iconStroke.strokeWidth = dpf(1.6f)
+                val px = cell.rect.right - dpf(20f)
+                val py = cell.rect.centerY()
+                canvas.drawCircle(px, py - dpf(3f), dpf(3.2f), iconStroke)
+                canvas.drawLine(px, py, px, py + dpf(6f), iconStroke)
             }
-            textPaint.color = if (selected) colors.enterText else ink
+            textPaint.color = ink
             textPaint.typeface = Typeface.DEFAULT
-            if (menu) {
-                val lines = cell.label.split('\n')
-                textPaint.textSize = dpf(15f)
-                val m = textPaint.fontMetrics
-                val lineH = m.descent - m.ascent
-                val top = cell.rect.centerY() - lineH * (lines.size - 1) / 2f - m.ascent
-                textPaint.textAlign = Paint.Align.CENTER
-                lines.forEachIndexed { i, line ->
-                    canvas.drawText(line, cell.rect.centerX(), top + lineH * i, textPaint)
-                }
-                return
-            }
             if (editorPanelVisible) {
                 val display = when (cell.label) {
                     "Home" -> "↤"
@@ -2680,14 +2736,14 @@ class DroidImeService : InputMethodService() {
             }
             val text = cell.label
             textPaint.textSize = dpf(15f)
-            val maxW = cell.rect.width() - dpf(40f)
+            val maxW = cell.rect.width() - dpf(56f)
             var shown = text
             while (shown.length > 1 && textPaint.measureText(shown) > maxW) shown = shown.dropLast(1)
             if (shown.length < text.length) shown = shown.dropLast(1) + "…"
             val m = textPaint.fontMetrics
             textPaint.textAlign = Paint.Align.LEFT
             canvas.drawText(
-                shown, cell.rect.left + dpf(28f),
+                shown, cell.rect.left + dpf(16f),
                 cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint
             )
             textPaint.textAlign = Paint.Align.CENTER
@@ -2796,20 +2852,39 @@ class DroidImeService : InputMethodService() {
             }
         }
 
-        // A clip row's long-press menu is drawn inside the row, so the row is split into the menu
-        // entries top to bottom; the tap is routed to the entry it lands on.
-        private fun clipMenuAction(cell: Cell, y: Float): (() -> Unit)? {
+        // A clip row's long-press menu floats over the panel, so it is drawn after the cells.
+        private fun drawClipMenu(canvas: Canvas, colors: Palette) {
+            val card = cells.firstOrNull { it.clipId == clipMenuId } ?: return
+            val popup = clipMenuRect(card.rect)
+            shape.setColor(colors.key)
+            shape.setBounds(popup.left.toInt(), popup.top.toInt(), popup.right.toInt(), popup.bottom.toInt())
+            shape.cornerRadius = dpf(12f)
+            shape.draw(canvas)
+            val clip = clips.firstOrNull { it.id == clipMenuId } ?: return
+            val labels = listOf(if (clip.pinned) "Unpin" else "Pin", "Delete")
+            textPaint.color = colors.text
+            textPaint.typeface = Typeface.DEFAULT
+            textPaint.textSize = dpf(15f)
+            textPaint.textAlign = Paint.Align.LEFT
+            val m = textPaint.fontMetrics
+            val rowH = popup.height() / labels.size
+            labels.forEachIndexed { i, label ->
+                val cy = popup.top + rowH * i + rowH / 2f - (m.ascent + m.descent) / 2f
+                canvas.drawText(label, popup.left + dpf(16f), cy, textPaint)
+            }
+            textPaint.textAlign = Paint.Align.CENTER
+        }
+
+        // Taps inside the floating menu act on its entry; taps elsewhere on the card close it.
+        private fun clipMenuAction(cell: Cell, x: Float, y: Float): (() -> Unit)? {
             if (cell.clipId == null || clipMenuId != cell.clipId) return null
             val id = cell.clipId
-            val lines = cell.label.split('\n')
-            if (lines.size < 2) return null
-            val step = cell.rect.height() / lines.size
-            val index = ((y - cell.rect.top) / step).toInt().coerceIn(0, lines.size - 1)
-            return when (lines[index]) {
-                "Pin", "Unpin" -> ({ togglePin(id) })
-                "Delete" -> ({ deleteClip(id) })
-                "Paste" -> ({ pasteClip(id) })
-                else -> null
+            val popup = clipMenuRect(cell.rect)
+            if (!popup.contains(x, y)) return null
+            val index = (((y - popup.top) / popup.height()) * 2f).toInt().coerceIn(0, 1)
+            return when (index) {
+                0 -> ({ togglePin(id) })
+                else -> ({ deleteClip(id) })
             }
         }
 
@@ -2839,7 +2914,7 @@ class DroidImeService : InputMethodService() {
                         keyFeedback(this)
                         if (cell.style == KeyStyle.SECTION) return true
                         // The panel has no glide and no delete repeat; every row is a plain tap.
-                        val menuAction = if (clipOpen()) clipMenuAction(cell, event.y) else null
+                        val menuAction = if (clipOpen()) clipMenuAction(cell, event.x, event.y) else null
                         val longAction = menuAction ?: cell.longAction
                         if (longAction != null) {
                             val runnable = Runnable {
@@ -2928,11 +3003,14 @@ class DroidImeService : InputMethodService() {
                     if (panelOpen()) {
                         val cell = pressed
                         pressed = null
+                        // A release before the hold delay is a plain tap: the scheduled long
+                        // action must not fire afterwards.
+                        cancelPendingLongPress()
                         invalidate()
                         if (cell != null && cell.style != KeyStyle.SECTION && !longPressFired &&
                             cellAt(event.x, event.y) === cell
                         ) {
-                            val menuAction = if (clipOpen()) clipMenuAction(cell, event.y) else null
+                            val menuAction = if (clipOpen()) clipMenuAction(cell, event.x, event.y) else null
                             if (menuAction != null) menuAction() else cell.action()
                         }
                         longPressFired = false
@@ -3175,6 +3253,9 @@ class DroidImeService : InputMethodService() {
         private const val CAPS = "\u2EA6"
         private const val MORE_SYMBOLS = "=\\<"
         private const val NUMBER_PAD = "12/34"
+
+        // Gboard's emoji grid is seven columns wide in portrait.
+        private const val EMOJI_COLUMNS = 7
 
         // Gboard reference geometry (1080px-wide screen): the key block is 678px tall with a
         // 124px bottom row, and each key is inset by ~6.7% of its row's unit width per side.

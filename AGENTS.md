@@ -22,7 +22,7 @@
 
 - Measure reference screenshots, don't eyeball: label connected components of non-background pixels to get key rects, then compare against `layoutRows` output. Reference device is 1080px wide at density 2.8125 (384dp); the measured constants are in `layoutRows`/`rowSpec`/`drawKeyGlyph`.
 - The cloud sandbox has no Android SDK, so Kotlin changes cannot be compiled or rendered there; the GitHub `Android Release` run is the compile check, so look at it after pushing.
-- A local build is possible here (see `build_apk.sh`); `gradle testDebugUnitTest` renders the keyboard states to `app/build/render/` with Robolectric, so a layout change can be checked by looking at the PNGs.
+- A local build is possible here, but the default `gradle` on PATH is 8.7 and AGP needs ≥8.9: run `/opt/gradle/gradle-8.9/bin/gradle --no-daemon testDebugUnitTest`, which renders the keyboard states to `app/build/render/` with Robolectric, so a layout change can be checked by looking at the PNGs.
 
 ## Testing notes
 
