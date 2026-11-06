@@ -1809,7 +1809,7 @@ class DroidImeService : InputMethodService() {
             val panel = clipsForPanel()
             val pinned = panel.filter { clip -> clip.pinned }
             val recent = panel.filter { clip -> !clip.pinned }
-            rows.add(listOf(3f to headerCell(), 1f to closeClipboardCell()))
+            rows.add(listOf(1f to closeClipboardCell(), 3f to headerCell()))
             if (panel.isEmpty()) {
                 rows.add(listOf(1f to emptyCell()))
                 return rows
@@ -2129,14 +2129,14 @@ class DroidImeService : InputMethodService() {
                 cell.touchRect.set(x, y - gap / 2f, x + colW, y2 + gap / 2f)
                 flat.add(cell)
             }
-            editorCells.firstOrNull { it.style == KeyStyle.HEADER }?.let { cell ->
-                cell.rect.set(left, top, right, top + headerH)
-                cell.touchRect.set(0f, 0f, width.toFloat(), top + headerH + gap)
+            byLabel["Close"]?.let { cell ->
+                cell.rect.set(left, top, left + dpf(48f), top + headerH)
+                cell.touchRect.set(0f, 0f, left + dpf(56f), top + headerH + gap)
                 flat.add(cell)
             }
-            byLabel["Close"]?.let { cell ->
-                cell.rect.set(right - dpf(48f), top, right, top + headerH)
-                cell.touchRect.set(right - dpf(56f), 0f, width.toFloat(), top + headerH + gap)
+            editorCells.firstOrNull { it.style == KeyStyle.HEADER }?.let { cell ->
+                cell.rect.set(left + dpf(56f), top, right, top + headerH)
+                cell.touchRect.set(left + dpf(48f), 0f, width.toFloat(), top + headerH + gap)
                 flat.add(cell)
             }
             place("←", 0, 0, 3)
@@ -2191,8 +2191,8 @@ class DroidImeService : InputMethodService() {
 
         private fun buildEmojiRows(): List<List<Pair<Float, Cell?>>> {
             val rows = mutableListOf<List<Pair<Float, Cell?>>>()
-            rows.add(listOf(3f to Cell("Search", KeyStyle.CLIP, null, action = { showEmojiSearch() }),
-                1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() })))
+            rows.add(listOf(1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEmojiPanel() }),
+                3f to Cell("Search", KeyStyle.CLIP, null, action = { showEmojiSearch() })))
             rows.add(EmojiCategory.values().map { category ->
                 1f to Cell(category.icon, KeyStyle.EMOJI_CATEGORY, null, action = { emojiCategory = category; renderKeyboard() })
             })
@@ -2469,9 +2469,17 @@ class DroidImeService : InputMethodService() {
                 return
             }
             if (cell.style == KeyStyle.HEADER_CLOSE) {
-                textPaint.color = ink; textPaint.textSize = dpf(24f); textPaint.textAlign = Paint.Align.CENTER
-                val m = textPaint.fontMetrics
-                canvas.drawText("×", cell.rect.centerX(), cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
+                val cx = cell.rect.centerX()
+                val cy = cell.rect.centerY()
+                iconStroke.color = ink
+                iconStroke.strokeWidth = dpf(2.5f)
+                iconStroke.strokeCap = Paint.Cap.ROUND
+                val arm = dpf(7f)
+                val head = dpf(6f)
+                canvas.drawLine(cx + arm, cy, cx - arm, cy, iconStroke)
+                canvas.drawLine(cx - arm, cy, cx - arm + head, cy - head, iconStroke)
+                canvas.drawLine(cx - arm, cy, cx - arm + head, cy + head, iconStroke)
+                iconStroke.strokeCap = Paint.Cap.BUTT
                 return
             }
             if (cell.style == KeyStyle.HEADER) {
