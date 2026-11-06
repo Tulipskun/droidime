@@ -133,6 +133,39 @@ class LogicTest {
         assertEquals(3, out.size)
     }
 
+    @Test fun glideDictionaryUsesStartAndEndCharacterIndex() {
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(
+            arrayOf("สวัสดี", "ภาษาไทย", "สวัสดิการ"),
+            intArrayOf(100, 90, 80)
+        )
+        val matches = call(dict, "glideCandidates", setOf('ส'), setOf('ี')) as IntArray
+        assertTrue(matches.contains(0))
+        assertFalse(matches.contains(1))
+        assertFalse(matches.contains(2))
+    }
+
+    @Test fun glidePathHistoryIsSavedAsOneCompleteGesture() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val points = listOf(10f to 20f, 30f to 40f, 50f to 60f)
+        call(service, "recordGlidePath", points, 100, 100, false)
+        val events = call(service, "touchHistory") as List<*>
+        assertEquals(3, events.size)
+        assertEquals(0, (events[0] as org.json.JSONObject).optInt("index"))
+        assertEquals(2, (events[2] as org.json.JSONObject).optInt("index"))
+    }
+
+    @Test fun expandedThaiDictionaryIncludesPyThaiNlpCoverage() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val thai = call(service, "loadDictionary", "words_th.txt")!!
+        for (word in listOf("กฎหมายแรงงาน", "กบเหลาดินสอ", "กรมบังคับคดี", "กฎระเบียบ", "กระดาษเช็ดปาก")) {
+            assertTrue("missing Thai word: $word", (call(thai, "indexOf", word) as Int) >= 0)
+        }
+        assertTrue("Thai dictionary should include the expanded word list",
+            (getField(thai, "words") as Array<*>).size >= 72000)
+    }
+
     @Test fun expandedDictionariesContainThaiEnglishSlangAndProfanity() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val english = call(service, "loadDictionary", "words_en.txt")!!
