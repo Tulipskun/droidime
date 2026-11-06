@@ -38,5 +38,5 @@ Pushes to `main` build a signed APK and replace the single `latest` GitHub relea
 
 ## Credits
 
-- Thai suggestions combine Thai National Corpus word frequencies (PyThaiNLP, CC0) with the 19,069-entry Royal Institute Dictionary word list (MIT-licensed `nv23/thai-wordlist`).
+- Thai suggestions use a 44,750-entry merged word list: Thai National Corpus frequencies, the 19,069-entry Royal Institute word list, 14,381 curated supplementary entries (including slang, loanwords, domain terms and names), and Thai profanity and abbreviation vocabularies. Sources and licenses are documented in `THIRD_PARTY_NOTICES.md`.
 - English suggestions combine wordfreq frequencies (CC BY-SA 4.0), the SCOWL-derived en_US Hunspell word list (SCOWL permissive word-list terms; see `THIRD_PARTY_NOTICES.md`), an MIT profanity list, and an MIT modern slang list.
