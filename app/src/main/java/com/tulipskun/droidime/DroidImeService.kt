@@ -1320,7 +1320,7 @@ class DroidImeService : InputMethodService() {
             setSingleLine(true)
             setText(emojiSearchQuery)
         }
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Search emoji")
             .setView(field)
             .setNegativeButton("Cancel", null)
@@ -1328,7 +1328,14 @@ class DroidImeService : InputMethodService() {
                 emojiSearchQuery = field.text.toString().trim()
                 renderKeyboard()
             }
-            .show()
+            .create()
+
+        val imeToken = window.window?.decorView?.windowToken ?: return
+        dialog.window?.apply {
+            setType(android.view.WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG)
+            attributes = attributes.apply { token = imeToken }
+        }
+        dialog.show()
     }
 
     private fun emojiMatchesQuery(emoji: String, query: String): Boolean {
