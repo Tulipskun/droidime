@@ -115,7 +115,7 @@ class LogicTest {
         for (word in listOf("rizz", "delulu", "fuck", "asshole")) {
             assertTrue("missing English word: $word", (call(english, "indexOf", word) as Int) >= 0)
         }
-        for (word in listOf("กกช้าง", "กฎหมาย", "กทม.", "กวนตีน", "ควย", "ไอ้สัส", "จึ้ง", "นอยด์", "บ้ง", "ตัวตึง", "ป้ายยา", "มูฟออน")) {
+        for (word in listOf("กกช้าง", "กฎหมาย", "กทม.", "กวนตีน", "ควย", "ไอ้สัส", "จึ้ง", "นอยด์", "บ้ง", "ตัวตึง", "ป้ายยา", "มูฟออน", "อีดอก", "อิสัส", "ขิตคาที่", "ดีย์", "ดร.")) {
             assertTrue("missing Thai word: $word", (call(thai, "indexOf", word) as Int) >= 0)
         }
         assertTrue((getField(english, "words") as Array<*>).size >= 65000)
