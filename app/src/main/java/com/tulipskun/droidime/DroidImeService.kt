@@ -2503,6 +2503,39 @@ class DroidImeService : InputMethodService() {
             )
             shape.cornerRadius = cornerRadius
             shape.draw(canvas)
+            if (editorPanelVisible && cell.label in setOf("←", "→", "↑", "↓")) {
+                val cx = cell.rect.centerX()
+                val cy = cell.rect.centerY()
+                val arm = dpf(10f)
+                val head = dpf(7f)
+                iconStroke.color = colors.hint
+                iconStroke.strokeWidth = dpf(3f)
+                iconStroke.strokeCap = Paint.Cap.ROUND
+                when (cell.label) {
+                    "←" -> {
+                        canvas.drawLine(cx + arm, cy, cx - arm, cy, iconStroke)
+                        canvas.drawLine(cx - arm, cy, cx - arm + head, cy - head, iconStroke)
+                        canvas.drawLine(cx - arm, cy, cx - arm + head, cy + head, iconStroke)
+                    }
+                    "→" -> {
+                        canvas.drawLine(cx - arm, cy, cx + arm, cy, iconStroke)
+                        canvas.drawLine(cx + arm, cy, cx + arm - head, cy - head, iconStroke)
+                        canvas.drawLine(cx + arm, cy, cx + arm - head, cy + head, iconStroke)
+                    }
+                    "↑" -> {
+                        canvas.drawLine(cx, cy + arm, cx, cy - arm, iconStroke)
+                        canvas.drawLine(cx, cy - arm, cx - head, cy - arm + head, iconStroke)
+                        canvas.drawLine(cx, cy - arm, cx + head, cy - arm + head, iconStroke)
+                    }
+                    "↓" -> {
+                        canvas.drawLine(cx, cy - arm, cx, cy + arm, iconStroke)
+                        canvas.drawLine(cx, cy + arm, cx - head, cy + arm - head, iconStroke)
+                        canvas.drawLine(cx, cy + arm, cx + head, cy + arm - head, iconStroke)
+                    }
+                }
+                iconStroke.strokeCap = Paint.Cap.BUTT
+                return
+            }
             val clip = clips.firstOrNull { it.id == cell.clipId }
             if (clip != null && clip.pinned) {
                 iconFill.color = colors.hint
