@@ -375,7 +375,7 @@ class MainActivity : Activity() {
                 fun scanAsset(name: String, isThai: Boolean) {
                     assets.open(name).bufferedReader(Charsets.UTF_8).useLines { lines ->
                         lines.forEach { line ->
-                            val tab = line.indexOf('\t')
+                            val tab = line.indexOf(9.toChar())
                             if (tab <= 0) return@forEach
                             val word = line.substring(0, tab)
                             val normalized = if (isThai) word else word.lowercase()
@@ -396,7 +396,7 @@ class MainActivity : Activity() {
 
                 val personal = preferences.getString("user_dict", "").orEmpty()
                 for (line in personal.lineSequence()) {
-                    val tab = line.indexOf('\t')
+                    val tab = line.indexOf(9.toChar())
                     if (tab <= 0) continue
                     val word = line.substring(0, tab)
                     if (word.contains(query, ignoreCase = true)) {
