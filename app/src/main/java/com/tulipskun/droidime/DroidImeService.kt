@@ -1217,7 +1217,7 @@ class DroidImeService : InputMethodService() {
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
         fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
         return listOf(
-            listOf(3f to Cell("Text editing", KeyStyle.HEADER, null, action = {}),
+            listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
             listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to action("Select all")),
             listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
@@ -2129,7 +2129,7 @@ class DroidImeService : InputMethodService() {
                 cell.touchRect.set(x, y - gap / 2f, x + colW, y2 + gap / 2f)
                 flat.add(cell)
             }
-            byLabel["Text editing"]?.let { cell ->
+            editorCells.firstOrNull { it.style == KeyStyle.HEADER }?.let { cell ->
                 cell.rect.set(left, top, right, top + headerH)
                 cell.touchRect.set(0f, 0f, width.toFloat(), top + headerH + gap)
                 flat.add(cell)
@@ -2223,10 +2223,16 @@ class DroidImeService : InputMethodService() {
                 val h = when (index) { 0 -> headerH; 1 -> categoryH; else -> rowH }
                 val y2 = (y + h).coerceAtMost(bottom)
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
-                val usable = (width - dpf(8f)).coerceAtLeast(1f); var x = dpf(4f)
-                row.forEach { (weight, cell) ->
-                    val x2 = x + usable * weight / totalWeight
-                    if (cell != null) { cell.rect.set(x, y, x2, y2); cell.touchRect.set(x, if (index == 0) 0f else y, x2, y2); flat.add(cell) }
+                val usable = (width - dpf(8f)).coerceAtLeast(1f)
+                var x = dpf(4f)
+                row.forEachIndexed { column, (weight, cell) ->
+                    val x2 = if (index >= 2) dpf(4f) + (column + 1) * (usable / 8f)
+                        else x + usable * weight / totalWeight
+                    if (cell != null) {
+                        cell.rect.set(x, y, x2, y2)
+                        cell.touchRect.set(x, if (index == 0) 0f else y, x2, y2)
+                        flat.add(cell)
+                    }
                     x = x2
                 }
             }
@@ -2517,6 +2523,26 @@ class DroidImeService : InputMethodService() {
                 lines.forEachIndexed { i, line ->
                     canvas.drawText(line, cell.rect.centerX(), top + lineH * i, textPaint)
                 }
+                return
+            }
+            if (editorPanelVisible) {
+                val display = when (cell.label) {
+                    "Home" -> "↤"
+                    "End" -> "↦"
+                    "Delete" -> "⌫"
+                    else -> cell.label
+                }
+                textPaint.textSize = dpf(
+                    when (cell.label) {
+                        "←", "→", "↑", "↓" -> 30f
+                        "Home", "End", "Delete" -> 26f
+                        else -> 15f
+                    }
+                )
+                val m = textPaint.fontMetrics
+                textPaint.textAlign = Paint.Align.CENTER
+                canvas.drawText(display, cell.rect.centerX(),
+                    cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint)
                 return
             }
             val text = cell.label
