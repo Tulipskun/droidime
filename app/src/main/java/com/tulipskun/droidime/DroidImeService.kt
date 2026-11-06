@@ -2313,7 +2313,8 @@ class DroidImeService : InputMethodService() {
                     KeyStyle.SPACE -> colors.key
                     KeyStyle.ENTER -> colors.enter
                     KeyStyle.TOOLBAR, KeyStyle.SUGGESTION, KeyStyle.CLIP, KeyStyle.HEADER,
-                    KeyStyle.HEADER_CLOSE, KeyStyle.SECTION, KeyStyle.EMOJI, KeyStyle.EMOJI_CATEGORY -> colors.background
+                    KeyStyle.HEADER_CLOSE, KeyStyle.SECTION, KeyStyle.EMOJI, KeyStyle.EMOJI_CATEGORY,
+                    KeyStyle.EMOJI_FOOTER -> colors.background
                 }
             )
             shape.setBounds(
