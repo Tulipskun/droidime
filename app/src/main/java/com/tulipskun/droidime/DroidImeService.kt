@@ -811,12 +811,13 @@ class DroidImeService : InputMethodService() {
     // ---- Glide typing -------------------------------------------------------------------------
 
     private fun clipOpen(): Boolean = preferences.getBoolean("clipboard", true) && clipPanelVisible
-    private fun panelOpen(): Boolean = clipOpen() || emojiPanelVisible
+    private fun panelOpen(): Boolean = clipOpen() || emojiPanelVisible || editorPanelVisible
 
     // The panel replaces the suggestion strip and the letter rows, so the keys that are drawn
     // while it is open are not glide letters.
     private var clipPanelVisible = false
     private var emojiPanelVisible = false
+    private var editorPanelVisible = false
     private var emojiCategory = EmojiCategory.FACES
 
     private fun glideAllowed(): Boolean =
@@ -1090,6 +1091,7 @@ class DroidImeService : InputMethodService() {
 
     private fun openClipboardPanel() {
         emojiPanelVisible = false
+        editorPanelVisible = false
         clipSelection = null
         clipMenuId = null
         clipPanelVisible = true
@@ -1149,6 +1151,60 @@ class DroidImeService : InputMethodService() {
 
     private fun selectAllText() {
         currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
+    }
+
+    private fun openEditorPanel() {
+        clipPanelVisible = false
+        emojiPanelVisible = false
+        editorPanelVisible = true
+        renderKeyboard()
+    }
+
+    private fun closeEditorPanel() {
+        editorPanelVisible = false
+        renderKeyboard()
+    }
+
+    private fun editorKey(keyCode: Int, selecting: Boolean = false) {
+        val connection = currentInputConnection ?: return
+        val meta = if (selecting) KeyEvent.META_SHIFT_ON else 0
+        val now = SystemClock.uptimeMillis()
+        connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, meta))
+        connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, meta))
+        afterTextChanged()
+    }
+
+    private fun editorAction(label: String) {
+        val connection = currentInputConnection ?: return
+        when (label) {
+            "←" -> editorKey(KeyEvent.KEYCODE_DPAD_LEFT)
+            "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT)
+            "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP)
+            "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN)
+            "Select ←" -> editorKey(KeyEvent.KEYCODE_DPAD_LEFT, selecting = true)
+            "Select →" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = true)
+            "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME)
+            "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END)
+            "Select all" -> connection.performContextMenuAction(android.R.id.selectAll)
+            "Cut" -> connection.performContextMenuAction(android.R.id.cut)
+            "Copy" -> connection.performContextMenuAction(android.R.id.copy)
+            "Paste" -> connection.performContextMenuAction(android.R.id.paste)
+            "Undo" -> sendCtrl(KeyEvent.KEYCODE_Z)
+            "Redo" -> sendCtrl(KeyEvent.KEYCODE_Y)
+        }
+        afterTextChanged()
+    }
+
+    private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
+        fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
+        val rows = mutableListOf<List<Pair<Float, Cell?>>>()
+        rows.add(listOf(3f to Cell("Text editing", KeyStyle.HEADER, null, action = {}),
+            1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })))
+        rows.add(listOf(1f to action("←"), 1f to action("↑"), 1f to action("↓"), 1f to action("→")))
+        rows.add(listOf(1f to action("Select ←"), 1f to action("Select →"), 1f to action("Home"), 1f to action("End")))
+        rows.add(listOf(1f to action("Select all"), 1f to action("Cut"), 1f to action("Copy"), 1f to action("Paste")))
+        rows.add(listOf(1f to action("Undo"), 1f to action("Redo")))
+        return rows
     }
 
     // Long-pressing the cursor tool copies the selection, which is how a clip reaches the
@@ -1232,7 +1288,8 @@ class DroidImeService : InputMethodService() {
 
     // Toolbar emoji key: tap types a comma, long-press opens the picker (not built yet).
     private fun showEmoji() {
-        clipPanelVisible = false; emojiPanelVisible = true; emojiCategory = EmojiCategory.FACES; renderKeyboard()
+        clipPanelVisible = false; editorPanelVisible = false
+        emojiPanelVisible = true; emojiCategory = EmojiCategory.FACES; renderKeyboard()
     }
     private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
     private fun insertEmoji(emoji: String) {
@@ -1618,6 +1675,7 @@ class DroidImeService : InputMethodService() {
         // Each row is a list of (weight, cell) slots; a null cell is an indent spacer.
         private fun buildRows(): List<List<Pair<Float, Cell?>>> {
             if (emojiPanelVisible) return buildEmojiRows()
+            if (editorPanelVisible) return buildEditorRows()
             if (clipOpen()) return buildClipRows()
             val numberRowEnglish = preferences.getBoolean("number_row_en", true)
             val numberRowThai = preferences.getBoolean("number_row_th", false)
@@ -1675,8 +1733,8 @@ class DroidImeService : InputMethodService() {
             }
             // The cursor tool selects all on a tap and copies the selection on a long-press, which
             // is how a clip reaches the clipboard panel from the keyboard alone.
-            val cursor = tool(ToolIcon.SELECT, "Select all")
-                .withAction { selectAllText() }
+            val cursor = tool(ToolIcon.SELECT, "Text editing")
+                .withAction { openEditorPanel() }
                 .withLongAction { copySelectionTool() }
             val grid = tool(ToolIcon.GRID, "Choose keyboard")
                 .withAction { showKeyboardPicker() }
