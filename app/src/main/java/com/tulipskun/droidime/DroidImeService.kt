@@ -83,7 +83,7 @@ class DroidImeService : InputMethodService() {
         val strippedIndex: HashMap<String, Int>
         private val prefixIndex: HashMap<String, IntArray>
         private val glideIndex: HashMap<Int, IntArray>
-        private val strippedWords: Array<String>
+        val strippedWords: Array<String>
         val maxFrequency: Int
 
         init {
