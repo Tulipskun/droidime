@@ -2,7 +2,7 @@ package com.tulipskun.droidime
 
 import android.app.Activity
 import android.content.Context
-import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,14 +51,15 @@ class EditorPanelFlowTest {
         return method.invoke(target, *args)
     }
 
-    private fun editor(text: String = "hello"): Triple<DroidImeService, EditText, BaseInputConnection> {
+    private fun editor(text: String = "hello"): Triple<DroidImeService, EditText, android.view.inputmethod.InputConnection> {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val view = EditText(activity).apply {
             setText(text)
             setSelection(text.length)
         }
-        val connection = BaseInputConnection(view, true)
+        val connection = view.onCreateInputConnection(EditorInfo())
+            ?: throw AssertionError("EditText did not create an InputConnection")
         setField(service, "mInputConnection", connection)
         return Triple(service, view, connection)
     }
