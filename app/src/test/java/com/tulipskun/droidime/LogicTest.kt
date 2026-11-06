@@ -115,8 +115,10 @@ class LogicTest {
         for (word in listOf("rizz", "delulu", "fuck", "asshole")) {
             assertTrue("missing English word: $word", (call(english, "indexOf", word) as Int) >= 0)
         }
-        assertTrue("missing Royal Institute Thai word", (call(thai, "indexOf", "กกช้าง") as Int) >= 0)
+        for (word in listOf("กกช้าง", "กฎหมาย", "กทม.", "กวนตีน", "ควย", "ไอ้สัส", "จึ้ง", "นอยด์", "บ้ง", "ตัวตึง", "ป้ายยา", "มูฟออน")) {
+            assertTrue("missing Thai word: $word", (call(thai, "indexOf", word) as Int) >= 0)
+        }
         assertTrue((getField(english, "words") as Array<*>).size >= 65000)
-        assertTrue((getField(thai, "words") as Array<*>).size >= 31000)
+        assertTrue((getField(thai, "words") as Array<*>).size >= 44000)
     }
 }
