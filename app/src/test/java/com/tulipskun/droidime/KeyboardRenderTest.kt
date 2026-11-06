@@ -63,7 +63,8 @@ class KeyboardRenderTest {
             val numberPad: Boolean,
             val clip: Boolean = false,
             val clipMenu: Boolean = false,
-            val clipEdit: Boolean = false
+            val clipEdit: Boolean = false,
+            val editor: Boolean = false
         )
 
         val states = listOf(
@@ -76,7 +77,8 @@ class KeyboardRenderTest {
             State("clip_empty", "ENGLISH", false, false, 0, false, clip = true),
             State("clip_items", "ENGLISH", false, false, 0, false, clip = true),
             State("clip_menu", "ENGLISH", false, false, 0, false, clip = true, clipMenu = true),
-            State("clip_edit", "ENGLISH", false, false, 0, false, clip = true, clipEdit = true)
+            State("clip_edit", "ENGLISH", false, false, 0, false, clip = true, clipEdit = true),
+            State("text_editing", "ENGLISH", false, false, 0, false, editor = true)
         )
 
         for (s in states) {
@@ -98,6 +100,7 @@ class KeyboardRenderTest {
                 service.setField("clips", ArrayList<Any>())
             }
             service.setField("clipPanelVisible", s.clip)
+            service.setField("editorPanelVisible", s.editor)
             service.setField("clipMenuId", if (s.clipMenu) "2" else null)
             service.setField("clipSelection", null)
             service.setField("clipEdit", s.clipEdit)
