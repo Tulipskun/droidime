@@ -1539,11 +1539,23 @@ class DroidImeService : InputMethodService() {
     private fun deleteOne(updateShift: Boolean = true) {
         val connection = currentInputConnection ?: return
         markLastTouchCorrected()
+
+        val composing = thaiComposingText
+        if (composing.isNotEmpty() &&
+            connection.getTextBeforeCursor(composing.length, 0)?.toString() == composing
+        ) {
+            val start = composing.offsetByCodePoints(composing.length, -1)
+            val remaining = composing.substring(0, start)
+            if (remaining.isEmpty()) connection.commitText("", 1)
+            else connection.setComposingText(remaining, 1)
+            thaiComposingText = remaining
+            glideCommitted = null
+            glideAlternatives = emptyList()
+            if (updateShift) afterTextChanged()
+            return
+        }
+
         finishThaiComposition()
-        // A word just produced by a glide (or picked from the strip) sits whole before the
-        // cursor. Taking it back in one press matches Gboard, where delete removes the word the
-        // suggestion strip just offered rather than its last character. This applies to the first
-        // press and to the repeat that follows it, so holding delete does not nibble the word.
         val tail = glideCommitted
         if (tail != null && connection.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
             connection.deleteSurroundingText(tail.length, 0)
