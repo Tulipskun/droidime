@@ -173,8 +173,23 @@ class MainActivity : Activity() {
             setTextColor(mutedColor)
             setPadding(0, dp(5), 0, dp(2))
         })
-        val tokenField = EditText(this).apply {
-            hint = "Paste Cloudflare Tunnel token"
+        remoteCard.addView(actionButton("Save device name") {
+            val deviceName = DeviceEndpoint.normalize(deviceNameField.text.toString())
+            if (!DeviceEndpoint.isValid(deviceName)) {
+                Toast.makeText(this, "Use 1–32 lowercase letters, numbers or hyphens", Toast.LENGTH_SHORT).show()
+            } else {
+                val previousName = DeviceEndpoint.getOrCreateName(this)
+                if (previousName != deviceName) {
+                    stopService(Intent(this, CloudflareTunnelService::class.java))
+                    stopService(Intent(this, McpService::class.java))
+                }
+                remotePrefs.edit().putString("device_name", deviceName).apply()
+                deviceNameField.setText(deviceName)
+                refreshRemoteStatus()
+            }
+        })
+        val apiTokenField = EditText(this).apply {
+            hint = "Paste Cloudflare API token (CF_TOKEN)"
             textSize = 15f
             setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -182,56 +197,71 @@ class MainActivity : Activity() {
             background = rounded(inputColor, dp(10))
         }
         remoteCard.addView(TextView(this).apply {
-            text = "Cloudflare Tunnel token"
+            text = "Cloudflare API token (CF_TOKEN)"
             textSize = 13f
             setTextColor(mutedColor)
-            setPadding(0, dp(10), 0, dp(5))
+            setPadding(0, dp(12), 0, dp(5))
         })
-        remoteCard.addView(tokenField, LinearLayout.LayoutParams(-1, -2))
+        remoteCard.addView(TextView(this).apply {
+            text = "Required permissions: Cloudflare Tunnel Edit/Write, DNS Edit/Write, Workers KV Storage Edit/Write, and Access Apps and Policies Edit/Write. The token is encrypted with Android Keystore."
+            textSize = 12f
+            setTextColor(mutedColor)
+            setPadding(0, 0, 0, dp(7))
+        })
+        remoteCard.addView(apiTokenField, LinearLayout.LayoutParams(-1, -2))
         tokenSavedStatus = TextView(this).apply {
             textSize = 12f
             setTextColor(mutedColor)
             setPadding(0, dp(5), 0, 0)
         }
         remoteCard.addView(tokenSavedStatus)
-        remoteCard.addView(actionButton("Save Named Tunnel settings") {
+        remoteCard.addView(actionButton("Save CF_TOKEN") {
+            val value = apiTokenField.text.toString().trim()
+            if (value.isBlank()) {
+                Toast.makeText(this, "Cloudflare API token is required", Toast.LENGTH_SHORT).show()
+            } else {
+                try {
+                    CloudflareApiTokenStore.save(this, value)
+                    apiTokenField.text.clear()
+                    refreshRemoteStatus()
+                } catch (error: Throwable) {
+                    Toast.makeText(this, error.message ?: "Unable to save CF_TOKEN", Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+        remoteCard.addView(actionButton("Clear saved CF_TOKEN") {
+            AlertDialog.Builder(this)
+                .setTitle("Delete Cloudflare API token?")
+                .setMessage("Existing Tunnel credentials remain saved. Automatic provisioning will require a new CF_TOKEN.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete") { _, _ ->
+                    CloudflareApiTokenStore.clear(this)
+                    refreshRemoteStatus()
+                }.show()
+        })
+        remoteCard.addView(actionButton("Provision Named Tunnel") {
             val deviceName = DeviceEndpoint.normalize(deviceNameField.text.toString())
             if (!DeviceEndpoint.isValid(deviceName)) {
-                Toast.makeText(this, "Use 1–32 lowercase letters, numbers or hyphens", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Enter a valid device name first", Toast.LENGTH_SHORT).show()
             } else {
-                val newToken = tokenField.text.toString().trim()
-                try {
-                    if (newToken.isNotBlank()) TunnelTokenStore.save(this, newToken)
-                    if (TunnelTokenStore.read(this).isNullOrBlank()) {
-                        Toast.makeText(this, "Cloudflare token is required", Toast.LENGTH_SHORT).show()
-                    } else {
-                        val previousName = DeviceEndpoint.getOrCreateName(this)
-                        val nameChanged = previousName != deviceName
-                        val tokenChanged = newToken.isNotBlank()
-                        if (nameChanged || tokenChanged) {
-                            stopService(Intent(this, CloudflareTunnelService::class.java))
-                            if (nameChanged) stopService(Intent(this, McpService::class.java))
-                        }
-                        remotePrefs.edit().putString("device_name", deviceName).apply()
-                        deviceNameField.setText(deviceName)
-                        tokenField.text.clear()
-                        tokenSavedStatus.text = "Token saved encrypted on this device"
-                        refreshRemoteStatus()
-                    }
-                } catch (error: Throwable) {
-                    Toast.makeText(this, error.message ?: "Unable to save token", Toast.LENGTH_LONG).show()
+                val previousName = DeviceEndpoint.getOrCreateName(this)
+                if (previousName != deviceName) {
+                    stopService(Intent(this, CloudflareTunnelService::class.java))
+                    stopService(Intent(this, McpService::class.java))
                 }
+                remotePrefs.edit().putString("device_name", deviceName).apply()
+                provisionNamedTunnel(deviceName)
             }
         })
         remoteCard.addView(actionButton("Clear saved Tunnel token") {
             AlertDialog.Builder(this)
-                .setTitle("Delete saved token?")
-                .setMessage("The Named Tunnel will stop working until a new token is saved.")
+                .setTitle("Delete saved Tunnel token?")
+                .setMessage("The Named Tunnel will stop working until it is provisioned again.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Delete") { _, _ ->
                     stopService(Intent(this, CloudflareTunnelService::class.java))
                     TunnelTokenStore.clear(this)
-                    tokenSavedStatus.text = "No token saved"
+                    tokenSavedStatus.text = "Tunnel token cleared"
                     refreshRemoteStatus()
                 }.show()
         })
@@ -601,12 +631,75 @@ class MainActivity : Activity() {
         }
         try {
             val deviceName = DeviceEndpoint.getOrCreateName(this)
-            if (!DeviceEndpoint.isValid(deviceName) || TunnelTokenStore.read(this).isNullOrBlank()) {
-                Toast.makeText(this, "Save the hostname and Tunnel token first", Toast.LENGTH_LONG).show()
+            if (!DeviceEndpoint.isValid(deviceName)) {
+                Toast.makeText(this, "Enter a valid device name first", Toast.LENGTH_LONG).show()
                 return
             }
+            val savedTunnelToken = TunnelTokenStore.read(this)
+            val provisionedName = remotePrefs.getString("tunnel_token_device_name", null)
+            val needsProvisioning = savedTunnelToken.isNullOrBlank() ||
+                (provisionedName != null && provisionedName != deviceName)
+            if (needsProvisioning) {
+                if (CloudflareApiTokenStore.read(this).isNullOrBlank()) {
+                    Toast.makeText(this, "Save CF_TOKEN to provision the Named Tunnel automatically", Toast.LENGTH_LONG).show()
+                    return
+                }
+                provisionNamedTunnel(deviceName)
+                return
+            }
+            startNamedTunnelService()
+        } catch (error: Throwable) {
+            remoteTunnelStatus.text = error.message ?: "Unable to start Named Tunnel"
+        }
+    }
+
+    private fun provisionNamedTunnel(deviceName: String) {
+        val apiToken = try {
+            CloudflareApiTokenStore.read(this)
+        } catch (error: Throwable) {
+            remoteTunnelStatus.text = error.message ?: "Unable to read CF_TOKEN"
+            return
+        }
+        if (apiToken.isNullOrBlank()) {
+            Toast.makeText(this, "Save CF_TOKEN first", Toast.LENGTH_LONG).show()
+            return
+        }
+        remoteTunnelToggle.isEnabled = false
+        remoteTunnelStatus.text = "Provisioning Cloudflare Named Tunnel…"
+        remotePrefs.edit().remove("tunnel_error").putString("tunnel_status", "Provisioning Cloudflare Named Tunnel…").apply()
+        executor.execute {
+            try {
+                val result = CloudflareProvisioner.provision(this, apiToken, deviceName)
+                TunnelTokenStore.save(this, result.tunnelToken)
+                remotePrefs.edit()
+                    .putString("device_name", deviceName)
+                    .putString("tunnel_token_device_name", deviceName)
+                    .putString("tunnel_status", "Cloudflare resources configured")
+                    .remove("tunnel_error")
+                    .apply()
+                runOnUiThread {
+                    remoteTunnelToggle.isEnabled = true
+                    remoteTunnelStatus.text = "Cloudflare resources configured: " + result.hostname
+                    refreshRemoteStatus()
+                    startNamedTunnelService()
+                }
+            } catch (error: Throwable) {
+                val message = error.message ?: "Cloudflare provisioning failed"
+                remotePrefs.edit().putString("tunnel_error", message).putString("tunnel_status", message).apply()
+                runOnUiThread {
+                    remoteTunnelToggle.isEnabled = true
+                    remoteTunnelStatus.text = message
+                    refreshRemoteStatus()
+                }
+            }
+        }
+    }
+
+    private fun startNamedTunnelService() {
+        try {
             if (!McpService.isRunning) {
                 if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                    remoteTunnelStatus.text = "Cloudflare configured. Authorize Shizuku to start MCP."
                     requestShizuku()
                     return
                 }
@@ -638,9 +731,14 @@ class MainActivity : Activity() {
         val deviceName = DeviceEndpoint.getOrCreateName(this)
         val url = CloudflareTunnelService.tunnelUrl ?: DeviceEndpoint.endpoint(deviceName)
         remoteEndpoint.text = "Endpoint: $url"
-        tokenSavedStatus.text = if (try { !TunnelTokenStore.read(this).isNullOrBlank() } catch (_: Throwable) { false }) {
-            "Token saved encrypted on this device"
-        } else "No token saved"
+        val apiTokenSaved = try { !CloudflareApiTokenStore.read(this).isNullOrBlank() } catch (_: Throwable) { false }
+        val tunnelTokenSaved = try { !TunnelTokenStore.read(this).isNullOrBlank() } catch (_: Throwable) { false }
+        tokenSavedStatus.text = when {
+            apiTokenSaved && tunnelTokenSaved -> "CF_TOKEN and Tunnel token saved encrypted on this device"
+            apiTokenSaved -> "CF_TOKEN saved encrypted on this device"
+            tunnelTokenSaved -> "Tunnel token saved encrypted · CF_TOKEN not configured"
+            else -> "No Cloudflare credentials saved"
+        }
         remoteMcpToggle.text = if (mcpRunning) "Stop MCP Server" else "Start MCP Server"
         remoteTunnelToggle.text = if (tunnelRunning || CloudflareTunnelService.isStarting) "Stop Named Tunnel" else "Start Named Tunnel"
         if (::webhookField.isInitialized) updateWebhookButtons()

@@ -19,17 +19,20 @@ Native Android keyboard with Thai (Kedmanee) and English layouts.
 
 ## Remote control (MCP)
 
-DroidIME includes the Android control MCP server and Cloudflare Named Tunnel.
+DroidIME includes the Android control MCP server and provisions its own Cloudflare Named Tunnel. It does not depend on AIxodia Engine.
 
 1. Start Shizuku and authorize DroidIME.
-2. Create one Cloudflare Named Tunnel connector per device and save its token in DroidIME.
-3. In DroidIME, open **Remote control · MCP**, set a unique device name and save the tunnel token.
-4. Start the MCP Server and Named Tunnel. The public endpoint is `https://mcp.aixodia.dpdns.org/<device-name>`; a Cloudflare Worker gateway must route that path to the matching device tunnel and protect access with Cloudflare Access.
-5. MCP tools include tap, long press, swipe, gesture, multi-touch, key events, text input and screenshots. Action tools return a screenshot after execution.
+2. Set a unique device name in **Remote control · MCP**.
+3. Create a Cloudflare API Token with Account permissions **Cloudflare Tunnel Edit/Write**, **Workers KV Storage Edit/Write**, and **Access: Apps and Policies Edit/Write**, plus Zone permission **DNS Edit/Write** for aixodia.dpdns.org.
+4. Save the token as CF_TOKEN in DroidIME, then tap **Provision Named Tunnel** or **Start Named Tunnel**.
+5. DroidIME creates or reuses the device's Named Tunnel, configures ingress to http://localhost:8787, creates/updates its DNS CNAME, applies the gateway service-token-only Access policy, and registers the device hostname in the gateway KV namespace.
+6. The public endpoint is https://mcp.aixodia.dpdns.org/<device-name>. MCP tools include tap, long press, swipe, gesture, multi-touch, key events, text input and screenshots. Action tools return a screenshot after execution.
 
-The Cloudflare token is encrypted on-device with Android Keystore. The cloudflared ARM64 runtime is fetched from a pinned Droid-MCP revision during GitHub Actions builds; it is not stored as a duplicate binary in this repository. Android 7.0 (API 24) or later is required.
+CF_TOKEN and the generated Tunnel Token are encrypted separately using Android Keystore. The API token is sent only to Cloudflare's API and is not embedded in the APK or sent to AIxodia Engine. Re-running provisioning reuses the existing tunnel for the same device name; changing the device name creates a separate tunnel and leaves the previous tunnel untouched.
 
-**Security:** The Cloudflare tunnel token authenticates the phone as a tunnel connector; it does not authenticate MCP clients. The MCP HTTP endpoint has no built-in client authentication. Configure a Cloudflare Access policy for the public hostname before exposing it to the internet.
+The cloudflared ARM64 runtime is fetched from a pinned Droid-MCP revision during GitHub Actions builds. Android 7.0 (API 24) or later is required.
+
+**Security:** Use a dedicated Cloudflare API Token with only the permissions above. The MCP endpoint has no built-in client login; gateway requests are protected by Cloudflare Access and the Worker injects its service-token credentials when proxying to the device origin.
 
 ## Install
 
