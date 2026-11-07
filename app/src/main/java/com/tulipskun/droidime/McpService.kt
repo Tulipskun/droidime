@@ -19,7 +19,9 @@ class McpService : Service() {
             NotificationChannel(CHANNEL_ID, "DroidIME MCP", NotificationManager.IMPORTANCE_LOW)
         )
 
-        val notification = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
+        val notificationBuilder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID)
+            else Notification.Builder(this)
+        val notification = notificationBuilder
             .setContentTitle("DroidIME")
             .setContentText("MCP server listening on port 8787")
             .setSmallIcon(android.R.drawable.stat_sys_upload)
