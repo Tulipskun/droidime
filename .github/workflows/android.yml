@@ -33,6 +33,8 @@ jobs:
           mkdir -p app/src/main/jniLibs/arm64-v8a
           cp .droid-mcp/app/src/main/jniLibs/arm64-v8a/libcloudflared.so app/src/main/jniLibs/arm64-v8a/libcloudflared.so
           test -s app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+      - name: Test Cloudflare MCP gateway
+        run: npm --prefix gateway test
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
