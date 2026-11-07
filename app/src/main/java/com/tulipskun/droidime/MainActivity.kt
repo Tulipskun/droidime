@@ -636,11 +636,17 @@ class MainActivity : Activity() {
                 return
             }
             val savedTunnelToken = TunnelTokenStore.read(this)
+            val apiTokenAvailable = !CloudflareApiTokenStore.read(this).isNullOrBlank()
             val provisionedName = remotePrefs.getString("tunnel_token_device_name", null)
+            val managedTunnelId = remotePrefs.getString("cf_tunnel_id", null)
+            val managedTunnelName = remotePrefs.getString("cf_tunnel_device_name", null)
+            val isApiManaged = !managedTunnelId.isNullOrBlank() &&
+                managedTunnelName == deviceName && provisionedName == deviceName
             val needsProvisioning = savedTunnelToken.isNullOrBlank() ||
+                (apiTokenAvailable && !isApiManaged) ||
                 (provisionedName != null && provisionedName != deviceName)
             if (needsProvisioning) {
-                if (CloudflareApiTokenStore.read(this).isNullOrBlank()) {
+                if (!apiTokenAvailable) {
                     Toast.makeText(this, "Save CF_TOKEN to provision the Named Tunnel automatically", Toast.LENGTH_LONG).show()
                     return
                 }

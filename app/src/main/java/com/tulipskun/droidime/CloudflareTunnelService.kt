@@ -24,10 +24,28 @@ class CloudflareTunnelService : Service() {
         executor.execute {
             try {
                 ensureMcpServer()
-                val token = TunnelTokenStore.read(this)
-                    ?: throw IllegalStateException("Cloudflare Tunnel token is not configured")
                 val deviceName = DeviceEndpoint.getOrCreateName(this)
                 require(DeviceEndpoint.isValid(deviceName)) { "Enter a valid device name" }
+                val prefs = getSharedPreferences("droid_mcp", MODE_PRIVATE)
+                val apiToken = CloudflareApiTokenStore.read(this)
+                val savedToken = TunnelTokenStore.read(this)
+                val managedId = prefs.getString("cf_tunnel_id", null)
+                val managedName = prefs.getString("cf_tunnel_device_name", null)
+                val tokenDeviceName = prefs.getString("tunnel_token_device_name", null)
+                val isApiManaged = !managedId.isNullOrBlank() &&
+                    managedName == deviceName && tokenDeviceName == deviceName
+                val token = if (!apiToken.isNullOrBlank() && (!isApiManaged || savedToken.isNullOrBlank())) {
+                    val result = CloudflareProvisioner.provision(this, apiToken, deviceName)
+                    TunnelTokenStore.save(this, result.tunnelToken)
+                    prefs.edit()
+                        .putString("tunnel_token_device_name", deviceName)
+                        .putString("tunnel_status", "Cloudflare resources configured")
+                        .remove("tunnel_error")
+                        .apply()
+                    result.tunnelToken
+                } else {
+                    savedToken ?: throw IllegalStateException("Save CF_TOKEN to provision the Named Tunnel")
+                }
                 startTunnel(token, deviceName)
             } catch (error: Throwable) {
                 if (!stopping) setState(false, null, error.message ?: "Cloudflare Named Tunnel failed")
