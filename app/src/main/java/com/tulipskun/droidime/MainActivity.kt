@@ -133,7 +133,7 @@ class MainActivity : Activity() {
         val remoteCard = card()
         remoteCard.addView(sectionTitle("Remote control · MCP"))
         remoteCard.addView(TextView(this).apply {
-            text = "Expose Android control tools through a local MCP endpoint and your Cloudflare Named Tunnel."
+            text = "Expose Android control tools through a local MCP endpoint and your Cloudflare Named Tunnel. Protect the hostname with Cloudflare Access: the MCP endpoint has no client login."
             textSize = 13f
             setTextColor(mutedColor)
             setPadding(0, 0, 0, dp(9))
