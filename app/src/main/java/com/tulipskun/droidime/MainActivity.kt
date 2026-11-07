@@ -165,7 +165,7 @@ class MainActivity : Activity() {
         val tokenField = EditText(this).apply {
             hint = "Paste Cloudflare Tunnel token"
             textSize = 15f
-            singleLine = true
+            setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(inputColor, dp(10))
