@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Tulipskun/Droid-MCP
+          ref: fc52cb3db9857433afd14b7f6a3f13b35b2b3752
           path: .droid-mcp
       - name: Prepare cloudflared runtime
         run: |
