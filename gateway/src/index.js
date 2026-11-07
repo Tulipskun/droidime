@@ -1,5 +1,5 @@
 const DEVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
-const ORIGIN_HOST = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.mcp-origin\.aixodia\.dpdns\.org$/;
+const ORIGIN_HOST = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.aixodia\.dpdns\.org$/;
 const HOP_BY_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host"]);
 
 function error(status, message) {

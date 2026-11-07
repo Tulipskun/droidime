@@ -8,14 +8,14 @@ test("validates device names", () => {
 });
 
 test("restricts upstream hostname suffix", () => {
-  assert.equal(ORIGIN_HOST.test("pixel-8.mcp-origin.aixodia.dpdns.org"), true);
+  assert.equal(ORIGIN_HOST.test("pixel-8.aixodia.dpdns.org"), true);
   assert.equal(ORIGIN_HOST.test("attacker.example"), false);
   assert.equal(ORIGIN_HOST.test("pixel-8.example.org"), false);
 });
 
 test("fails closed without origin authentication", async () => {
   const response = await worker.fetch(new Request("https://mcp.aixodia.dpdns.org/pixel-8"), {
-    DEVICE_TUNNELS: { get: async () => "pixel-8.mcp-origin.aixodia.dpdns.org" }
+    DEVICE_TUNNELS: { get: async () => "pixel-8.aixodia.dpdns.org" }
   });
   assert.equal(response.status, 503);
 });
@@ -30,12 +30,12 @@ test("proxies MCP path, query, method, body and Access service token", async () 
       body: JSON.stringify({ jsonrpc: "2.0" })
     });
     const response = await worker.fetch(request, {
-      DEVICE_TUNNELS: { get: async key => key === "pixel-8" ? "pixel-8.mcp-origin.aixodia.dpdns.org" : null },
+      DEVICE_TUNNELS: { get: async key => key === "pixel-8" ? "pixel-8.aixodia.dpdns.org" : null },
       ACCESS_CLIENT_ID: "test-id", ACCESS_CLIENT_SECRET: "test-secret"
     });
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "ok");
-    assert.equal(seen.url, "https://pixel-8.mcp-origin.aixodia.dpdns.org/pixel-8?x=1");
+    assert.equal(seen.url, "https://pixel-8.aixodia.dpdns.org/pixel-8?x=1");
     assert.equal(seen.headers.get("cf-access-client-id"), "test-id");
     assert.equal(seen.headers.get("cf-access-client-secret"), "test-secret");
     assert.equal(seen.headers.get("connection"), null);

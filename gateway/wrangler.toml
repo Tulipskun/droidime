@@ -4,8 +4,8 @@ compatibility_date = "2026-11-07"
 
 [[kv_namespaces]]
 binding = "DEVICE_TUNNELS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "9c094dd95b96473085eaaa625aefc383"
 
 [[routes]]
 pattern = "mcp.aixodia.dpdns.org/*"
-zone_name = "dpdns.org"
+zone_name = "aixodia.dpdns.org"
