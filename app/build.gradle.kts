@@ -14,7 +14,7 @@ android {
         // CI sets VERSION_CODE/VERSION_NAME from the workflow run number; local builds use the fallback.
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 5
         versionName = System.getenv("VERSION_NAME") ?: "1.0.dev"
-        ndk { abiFilters += listOf("arm64-v8a") }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
 
     buildFeatures {
