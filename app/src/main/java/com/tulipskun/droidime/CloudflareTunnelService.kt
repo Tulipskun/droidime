@@ -69,7 +69,7 @@ class CloudflareTunnelService : Service() {
             environment()["GODEBUG"] = "netdns=cgo"
         }.start()
         process = started
-        setState(false, "https://$hostname/mcp", "Connecting to Named Tunnel…")
+        setState(false, "https://$hostname/mcp", null)
         val recent = ArrayDeque<String>()
         BufferedReader(InputStreamReader(started.inputStream)).use { reader ->
             while (!stopping) {
@@ -124,9 +124,10 @@ class CloudflareTunnelService : Service() {
 
     private fun setState(running: Boolean, url: String?, error: String?) {
         isRunning = running
+        isStarting = !running && url != null && error == null
         tunnelUrl = url
         lastError = error
-        status = error ?: if (running) "Named Tunnel connected" else "Connecting to Named Tunnel…"
+        status = error ?: if (running) "Named Tunnel connected" else if (url != null) "Connecting to Named Tunnel…" else "Stopped"
         getSharedPreferences("droid_mcp", MODE_PRIVATE).edit()
             .putBoolean("tunnel_running", running)
             .putString("tunnel_url", url)
@@ -142,6 +143,7 @@ class CloudflareTunnelService : Service() {
         try { if (process?.isAlive == true) process?.destroyForcibly() } catch (_: Throwable) {}
         process = null
         isRunning = false
+        isStarting = false
         tunnelUrl = null
         status = "Stopped"
         getSharedPreferences("droid_mcp", MODE_PRIVATE).edit()
@@ -163,6 +165,7 @@ class CloudflareTunnelService : Service() {
         private const val MAX_ERROR_CHARS = 700
 
         @Volatile var isRunning = false
+        @Volatile var isStarting = false
         @Volatile var tunnelUrl: String? = null
         @Volatile var lastError: String? = null
         @Volatile var status: String = "Stopped"
