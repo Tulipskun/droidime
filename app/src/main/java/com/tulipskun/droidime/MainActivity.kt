@@ -150,7 +150,7 @@ class MainActivity : Activity() {
         val hostnameField = EditText(this).apply {
             hint = "mcp.example.com"
             textSize = 15f
-            singleLine = true
+            setSingleLine(true)
             setText(remotePrefs.getString("tunnel_hostname", ""))
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(inputColor, dp(10))
