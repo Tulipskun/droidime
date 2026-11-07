@@ -47,6 +47,8 @@ class MainActivity : Activity() {
     @Volatile private var downloading = false
     @Volatile private var destroyed = false
     private lateinit var remoteMcpStatus: TextView
+    private lateinit var remoteMcpToggle: TextView
+    private lateinit var remoteTunnelToggle: TextView
     private lateinit var remoteTunnelStatus: TextView
     private lateinit var remoteEndpoint: TextView
     private lateinit var tokenSavedStatus: TextView
@@ -143,7 +145,8 @@ class MainActivity : Activity() {
         }
         remoteCard.addView(remoteMcpStatus)
         remoteCard.addView(actionButton("Connect / authorize Shizuku") { requestShizuku() })
-        remoteCard.addView(actionButton("Start MCP Server") { toggleMcpServer() })
+        remoteMcpToggle = actionButton("Start MCP Server") { toggleMcpServer() }
+        remoteCard.addView(remoteMcpToggle)
         val hostnameField = EditText(this).apply {
             hint = "mcp.example.com"
             textSize = 15f
@@ -219,7 +222,8 @@ class MainActivity : Activity() {
             setPadding(0, dp(12), 0, dp(4))
         }
         remoteCard.addView(remoteTunnelStatus)
-        remoteCard.addView(actionButton("Start Named Tunnel") { toggleNamedTunnel() })
+        remoteTunnelToggle = actionButton("Start Named Tunnel") { toggleNamedTunnel() }
+        remoteCard.addView(remoteTunnelToggle)
         remoteEndpoint = TextView(this).apply {
             textSize = 13f
             setTextColor(mutedColor)
@@ -539,7 +543,7 @@ class MainActivity : Activity() {
     }
 
     private fun toggleNamedTunnel() {
-        if (CloudflareTunnelService.isRunning || remotePrefs.getBoolean("tunnel_running", false)) {
+        if (CloudflareTunnelService.isRunning || CloudflareTunnelService.isStarting || remotePrefs.getBoolean("tunnel_running", false)) {
             stopService(Intent(this, CloudflareTunnelService::class.java))
             refreshRemoteStatus()
             return
@@ -586,6 +590,8 @@ class MainActivity : Activity() {
         tokenSavedStatus.text = if (try { !TunnelTokenStore.read(this).isNullOrBlank() } catch (_: Throwable) { false }) {
             "Token saved encrypted on this device"
         } else "No token saved"
+        remoteMcpToggle.text = if (mcpRunning) "Stop MCP Server" else "Start MCP Server"
+        remoteTunnelToggle.text = if (tunnelRunning || CloudflareTunnelService.isStarting) "Stop Named Tunnel" else "Start Named Tunnel"
     }
 
     private fun searchDictionary(rawQuery: String, output: TextView) {
