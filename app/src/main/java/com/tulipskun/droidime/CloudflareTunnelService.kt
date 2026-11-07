@@ -26,13 +26,9 @@ class CloudflareTunnelService : Service() {
                 ensureMcpServer()
                 val token = TunnelTokenStore.read(this)
                     ?: throw IllegalStateException("Cloudflare Tunnel token is not configured")
-                val hostname = getSharedPreferences("droid_mcp", MODE_PRIVATE)
-                    .getString("tunnel_hostname", "").orEmpty().trim()
-                require(hostname.matches(Regex("(?i)^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")) &&
-                    hostname.contains(".") && !hostname.contains("..")) {
-                    "Enter a valid public hostname, e.g. mcp.example.com"
-                }
-                startTunnel(token, hostname.lowercase())
+                val deviceName = DeviceEndpoint.getOrCreateName(this)
+                require(DeviceEndpoint.isValid(deviceName)) { "Enter a valid device name" }
+                startTunnel(token, deviceName)
             } catch (error: Throwable) {
                 if (!stopping) setState(false, null, error.message ?: "Cloudflare Named Tunnel failed")
                 stopSelf()
@@ -51,7 +47,7 @@ class CloudflareTunnelService : Service() {
         if (!McpService.isRunning) throw IllegalStateException("MCP server could not be started")
     }
 
-    private fun startTunnel(token: String, hostname: String) {
+    private fun startTunnel(token: String, deviceName: String) {
         val binary = TermuxCloudflaredInstaller.ensureInstalled(this)
         val home = File(filesDir, "cloudflared-home").apply { mkdirs() }
         val command = listOf(
@@ -69,7 +65,8 @@ class CloudflareTunnelService : Service() {
             environment()["GODEBUG"] = "netdns=cgo"
         }.start()
         process = started
-        setState(false, "https://$hostname/mcp", null)
+        val endpoint = DeviceEndpoint.endpoint(deviceName)
+        setState(false, endpoint, null)
         val recent = ArrayDeque<String>()
         BufferedReader(InputStreamReader(started.inputStream)).use { reader ->
             while (!stopping) {
@@ -80,7 +77,7 @@ class CloudflareTunnelService : Service() {
                     val normalized = line.lowercase()
                     if (normalized.contains("registered tunnel connection") ||
                         normalized.contains("connection registered")) {
-                        setState(true, "https://$hostname/mcp", null)
+                        setState(true, endpoint, null)
                     } else if (normalized.contains("unable to establish") ||
                         normalized.contains("failed to connect") ||
                         normalized.contains("invalid tunnel")) {

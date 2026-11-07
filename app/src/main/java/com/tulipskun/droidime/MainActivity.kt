@@ -133,7 +133,7 @@ class MainActivity : Activity() {
         val remoteCard = card()
         remoteCard.addView(sectionTitle("Remote control · MCP"))
         remoteCard.addView(TextView(this).apply {
-            text = "Expose Android control tools through a local MCP endpoint and your Cloudflare Named Tunnel. Protect the hostname with Cloudflare Access: the MCP endpoint has no client login."
+            text = "Expose Android control tools at https://${DeviceEndpoint.HOST}/<device-name>. Protect the gateway with Cloudflare Access: the MCP endpoint has no client login."
             textSize = 13f
             setTextColor(mutedColor)
             setPadding(0, 0, 0, dp(9))
@@ -147,21 +147,27 @@ class MainActivity : Activity() {
         remoteCard.addView(actionButton("Connect / authorize Shizuku") { requestShizuku() })
         remoteMcpToggle = actionButton("Start MCP Server") { toggleMcpServer() }
         remoteCard.addView(remoteMcpToggle)
-        val hostnameField = EditText(this).apply {
-            hint = "mcp.example.com"
+        val deviceNameField = EditText(this).apply {
+            hint = "device-name"
             textSize = 15f
             setSingleLine(true)
-            setText(remotePrefs.getString("tunnel_hostname", ""))
+            setText(DeviceEndpoint.getOrCreateName(this@MainActivity))
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(inputColor, dp(10))
         }
         remoteCard.addView(TextView(this).apply {
-            text = "Named Tunnel hostname"
+            text = "Device name"
             textSize = 13f
             setTextColor(mutedColor)
             setPadding(0, dp(12), 0, dp(5))
         })
-        remoteCard.addView(hostnameField, LinearLayout.LayoutParams(-1, -2))
+        remoteCard.addView(deviceNameField, LinearLayout.LayoutParams(-1, -2))
+        remoteCard.addView(TextView(this).apply {
+            text = "Public endpoint: https://${DeviceEndpoint.HOST}/<device-name>"
+            textSize = 12f
+            setTextColor(mutedColor)
+            setPadding(0, dp(5), 0, dp(2))
+        })
         val tokenField = EditText(this).apply {
             hint = "Paste Cloudflare Tunnel token"
             textSize = 15f
@@ -184,9 +190,9 @@ class MainActivity : Activity() {
         }
         remoteCard.addView(tokenSavedStatus)
         remoteCard.addView(actionButton("Save Named Tunnel settings") {
-            val host = hostnameField.text.toString().trim().lowercase()
-            if (!host.matches(Regex("(?i)^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")) || !host.contains(".") || host.contains("..")) {
-                Toast.makeText(this, "Enter a valid hostname", Toast.LENGTH_SHORT).show()
+            val deviceName = DeviceEndpoint.normalize(deviceNameField.text.toString())
+            if (!DeviceEndpoint.isValid(deviceName)) {
+                Toast.makeText(this, "Use 1–32 lowercase letters, numbers or hyphens", Toast.LENGTH_SHORT).show()
             } else {
                 val newToken = tokenField.text.toString().trim()
                 try {
@@ -194,7 +200,15 @@ class MainActivity : Activity() {
                     if (TunnelTokenStore.read(this).isNullOrBlank()) {
                         Toast.makeText(this, "Cloudflare token is required", Toast.LENGTH_SHORT).show()
                     } else {
-                        remotePrefs.edit().putString("tunnel_hostname", host).apply()
+                        val previousName = DeviceEndpoint.getOrCreateName(this)
+                        val nameChanged = previousName != deviceName
+                        val tokenChanged = newToken.isNotBlank()
+                        if (nameChanged || tokenChanged) {
+                            stopService(Intent(this, CloudflareTunnelService::class.java))
+                            if (nameChanged) stopService(Intent(this, McpService::class.java))
+                        }
+                        remotePrefs.edit().putString("device_name", deviceName).apply()
+                        deviceNameField.setText(deviceName)
                         tokenField.text.clear()
                         tokenSavedStatus.text = "Token saved encrypted on this device"
                         refreshRemoteStatus()
@@ -549,8 +563,8 @@ class MainActivity : Activity() {
             return
         }
         try {
-            val host = remotePrefs.getString("tunnel_hostname", "").orEmpty()
-            if (host.isBlank() || TunnelTokenStore.read(this).isNullOrBlank()) {
+            val deviceName = DeviceEndpoint.getOrCreateName(this)
+            if (!DeviceEndpoint.isValid(deviceName) || TunnelTokenStore.read(this).isNullOrBlank()) {
                 Toast.makeText(this, "Save the hostname and Tunnel token first", Toast.LENGTH_LONG).show()
                 return
             }
@@ -584,9 +598,9 @@ class MainActivity : Activity() {
             savedStatus != null && savedStatus != "Stopped" -> savedStatus
             else -> "Stopped"
         }
-        val host = prefs.getString("tunnel_hostname", "").orEmpty()
-        val url = CloudflareTunnelService.tunnelUrl ?: if (host.isNotBlank()) "https://$host/mcp" else ""
-        remoteEndpoint.text = if (url.isBlank()) "Endpoint: configure a hostname" else "Endpoint: $url"
+        val deviceName = DeviceEndpoint.getOrCreateName(this)
+        val url = CloudflareTunnelService.tunnelUrl ?: DeviceEndpoint.endpoint(deviceName)
+        remoteEndpoint.text = "Endpoint: $url"
         tokenSavedStatus.text = if (try { !TunnelTokenStore.read(this).isNullOrBlank() } catch (_: Throwable) { false }) {
             "Token saved encrypted on this device"
         } else "No token saved"

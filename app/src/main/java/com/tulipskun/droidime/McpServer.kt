@@ -12,7 +12,8 @@ import java.nio.charset.StandardCharsets
 
 class McpServer(
     private val port: Int,
-    private val executor: ShizukuBridge
+    private val executor: ShizukuBridge,
+    private val endpointPath: String
 ) {
     private var serverSocket: ServerSocket? = null
     @Volatile private var running = false
@@ -59,10 +60,10 @@ class McpServer(
                 }
 
                 val method = parts[0]
-                val path = parts[1]
+                val path = parts[1].substringBefore('?')
                 val headers = readHeaders(input)
 
-                if (path != "/mcp") {
+                if (path != endpointPath) {
                     writeResponse(output, 404, "application/json", error(null, -32601, "Not found"))
                     return
                 }

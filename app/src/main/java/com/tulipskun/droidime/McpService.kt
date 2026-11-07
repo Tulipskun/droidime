@@ -23,7 +23,7 @@ class McpService : Service() {
             else Notification.Builder(this)
         val notification = notificationBuilder
             .setContentTitle("DroidIME")
-            .setContentText("MCP server listening on port 8787")
+            .setContentText("MCP endpoint /" + DeviceEndpoint.getOrCreateName(this))
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .build()
 
@@ -31,7 +31,8 @@ class McpService : Service() {
 
         val preferences = getSharedPreferences("droid_mcp", MODE_PRIVATE)
         try {
-            server = McpServer(8787, ShizukuBridge(preferences))
+            val deviceName = DeviceEndpoint.getOrCreateName(this)
+            server = McpServer(CloudflareTunnelConfig.LOCAL_PORT, ShizukuBridge(preferences), DeviceEndpoint.path(deviceName))
             server!!.start()
             isRunning = true
         } catch (_: Throwable) {

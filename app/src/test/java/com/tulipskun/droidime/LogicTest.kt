@@ -187,4 +187,23 @@ class LogicTest {
         assertTrue((getField(english, "words") as Array<*>).size >= 65000)
         assertTrue((getField(thai, "words") as Array<*>).size >= 54000)
     }
+    @Test fun deviceEndpointNormalizesDeviceNames() {
+        assertEquals("pixel-8-pro", DeviceEndpoint.normalize(" Pixel 8 Pro "))
+        assertEquals("android-device", DeviceEndpoint.normalize("---" ).ifBlank { "android-device" })
+    }
+
+    @Test fun deviceEndpointRejectsUnsafePathNames() {
+        assertTrue(DeviceEndpoint.isValid("pixel-8-pro"))
+        assertTrue(DeviceEndpoint.isValid("device01"))
+        assertFalse(DeviceEndpoint.isValid("../pixel"))
+        assertFalse(DeviceEndpoint.isValid("-pixel"))
+        assertFalse(DeviceEndpoint.isValid("pixel/8"))
+        assertFalse(DeviceEndpoint.isValid(""))
+    }
+
+    @Test fun deviceEndpointUsesSharedHostAndDevicePath() {
+        assertEquals("https://mcp.aixodia.dpdns.org/pixel-8", DeviceEndpoint.endpoint("pixel-8"))
+        assertEquals("/pixel-8", DeviceEndpoint.path("pixel-8"))
+    }
+
 }
