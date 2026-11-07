@@ -11,6 +11,8 @@ import android.util.Log
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.util.concurrent.Executors
 
 class CloudflareTunnelService : Service() {
@@ -71,15 +73,21 @@ class CloudflareTunnelService : Service() {
     private fun startTunnel(token: String, deviceName: String) {
         val binary = TermuxCloudflaredInstaller.ensureInstalled(this)
         val home = File(filesDir, "cloudflared-home").apply { mkdirs() }
-        val command = listOf(
+        val edgeAddresses = resolveEdgeAddresses()
+        Log.i(LOG_TAG, "Android DNS resolved Cloudflare edge addresses: ${edgeAddresses.joinToString()}")
+        val command = mutableListOf(
             binary.absolutePath,
             "tunnel",
             "--no-autoupdate",
             "--protocol", "http2",
-            "--metrics", "127.0.0.1:${CloudflareTunnelConfig.METRICS_PORT}",
-            "run",
-            "--token", token
+            "--edge-ip-version", "4",
+            "--metrics", "127.0.0.1:${CloudflareTunnelConfig.METRICS_PORT}"
         )
+        edgeAddresses.forEach { address ->
+            command.add("--edge")
+            command.add(address)
+        }
+        command.addAll(listOf("run", "--token", token))
         val started = ProcessBuilder(command).redirectErrorStream(true).apply {
             environment()["HOME"] = home.absolutePath
             environment()["TMPDIR"] = cacheDir.absolutePath
@@ -125,6 +133,27 @@ class CloudflareTunnelService : Service() {
             setState(false, null, message)
             stopSelf()
         }
+    }
+
+    private fun resolveEdgeAddresses(): List<String> {
+        val hosts = listOf(
+            "region1.v2.argotunnel.com",
+            "fed-region2.v2.argotunnel.com"
+        )
+        val addresses = linkedSetOf<String>()
+        hosts.forEach { host ->
+            try {
+                InetAddress.getAllByName(host)
+                    .filterIsInstance<Inet4Address>()
+                    .forEach { addresses.add("${it.hostAddress}:7844") }
+            } catch (error: Throwable) {
+                Log.w(LOG_TAG, "Android DNS could not resolve $host: ${error.message}")
+            }
+        }
+        check(addresses.isNotEmpty()) {
+            "Android DNS could not resolve Cloudflare Tunnel edge addresses"
+        }
+        return addresses.take(8)
     }
 
     private fun createNotificationChannel() {
