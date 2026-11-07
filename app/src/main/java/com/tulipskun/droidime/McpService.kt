@@ -2,6 +2,7 @@ package com.tulipskun.droidime
 
 import android.app.Notification
 import android.app.NotificationChannel
+import android.os.Build
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
@@ -14,16 +15,12 @@ class McpService : Service() {
         super.onCreate()
 
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Droid-MCP",
-                NotificationManager.IMPORTANCE_LOW
-            )
+        if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "DroidIME MCP", NotificationManager.IMPORTANCE_LOW)
         )
 
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Droid-MCP")
+        val notification = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
+            .setContentTitle("DroidIME")
             .setContentText("MCP server listening on port 8787")
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .build()
