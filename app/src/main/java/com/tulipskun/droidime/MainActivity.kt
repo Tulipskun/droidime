@@ -36,6 +36,7 @@ import android.widget.TextView
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -52,6 +53,10 @@ class MainActivity : Activity() {
     private lateinit var remoteTunnelStatus: TextView
     private lateinit var remoteEndpoint: TextView
     private lateinit var tokenSavedStatus: TextView
+    private lateinit var webhookField: EditText
+    private lateinit var webhookStatus: TextView
+    private lateinit var sendWebhookButton: TextView
+    private lateinit var copyCurlButton: TextView
     private val remotePrefs by lazy { getSharedPreferences("droid_mcp", MODE_PRIVATE) }
     private val remoteStatusHandler = Handler(Looper.getMainLooper())
     private val remoteStatusPoll = object : Runnable {
@@ -251,6 +256,38 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "MCP endpoint copied", Toast.LENGTH_SHORT).show()
             }
         })
+        webhookField = EditText(this).apply {
+            hint = "https://example.com/webhook"
+            textSize = 15f
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setText(remotePrefs.getString("webhook_url", ""))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(inputColor, dp(10))
+            setOnFocusChangeListener { _, hasFocus ->
+                if (!hasFocus) {
+                    remotePrefs.edit().putString("webhook_url", text.toString().trim()).apply()
+                    updateWebhookButtons()
+                }
+            }
+        }
+        remoteCard.addView(TextView(this).apply {
+            text = "Webhook URL"
+            textSize = 13f
+            setTextColor(mutedColor)
+            setPadding(0, dp(12), 0, dp(5))
+        })
+        remoteCard.addView(webhookField, LinearLayout.LayoutParams(-1, -2))
+        webhookStatus = TextView(this).apply {
+            textSize = 12f
+            setTextColor(mutedColor)
+            setPadding(0, dp(5), 0, dp(2))
+        }
+        remoteCard.addView(webhookStatus)
+        sendWebhookButton = actionButton("Send MCP URL to webhook") { sendMcpUrlToWebhook() }
+        remoteCard.addView(sendWebhookButton)
+        copyCurlButton = actionButton("Copy webhook cURL command") { copyWebhookCurl() }
+        remoteCard.addView(copyCurlButton)
         val autoStart = Switch(this).apply {
             text = "Start MCP and Named Tunnel after reboot"
             textSize = 14f
@@ -606,6 +643,78 @@ class MainActivity : Activity() {
         } else "No token saved"
         remoteMcpToggle.text = if (mcpRunning) "Stop MCP Server" else "Start MCP Server"
         remoteTunnelToggle.text = if (tunnelRunning || CloudflareTunnelService.isStarting) "Stop Named Tunnel" else "Start Named Tunnel"
+        if (::webhookField.isInitialized) updateWebhookButtons()
+    }
+
+    private fun updateWebhookButtons() {
+        val configured = webhookField.text.toString().trim().isNotBlank()
+        val endpointAvailable = (CloudflareTunnelService.tunnelUrl
+            ?: remotePrefs.getString("tunnel_url", "")).orEmpty().isNotBlank()
+        sendWebhookButton.isEnabled = configured && endpointAvailable
+        copyCurlButton.isEnabled = configured && endpointAvailable
+    }
+
+    private fun currentMcpEndpoint(): String =
+        (CloudflareTunnelService.tunnelUrl ?: DeviceEndpoint.endpoint(DeviceEndpoint.getOrCreateName(this))).trim()
+
+    private fun sendMcpUrlToWebhook() {
+        val webhook = webhookField.text.toString().trim()
+        remotePrefs.edit().putString("webhook_url", webhook).apply()
+        val endpoint = currentMcpEndpoint()
+        if (!webhook.startsWith("https://", ignoreCase = true)) {
+            webhookStatus.text = "Webhook must use HTTPS"
+            updateWebhookButtons()
+            return
+        }
+        if (!CloudflareTunnelService.isRunning) {
+            webhookStatus.text = "Start Named Tunnel first"
+            updateWebhookButtons()
+            return
+        }
+        sendWebhookButton.isEnabled = false
+        copyCurlButton.isEnabled = false
+        webhookStatus.text = "Sending MCP URL…"
+        val payload = JSONObject().put("url", endpoint).toString()
+        executor.execute {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = URL(webhook).openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 10000
+                connection.readTimeout = 15000
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                connection.setRequestProperty("Accept", "application/json, text/plain, */*")
+                connection.outputStream.use { it.write(payload.toByteArray(StandardCharsets.UTF_8)) }
+                val code = connection.responseCode
+                runOnUiThread {
+                    webhookStatus.text = if (code in 200..299) "Webhook sent (HTTP $code)" else "Webhook failed (HTTP $code)"
+                    updateWebhookButtons()
+                }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    webhookStatus.text = "Webhook failed: ${error.message ?: "network error"}"
+                    updateWebhookButtons()
+                }
+            } finally {
+                connection?.disconnect()
+            }
+        }
+    }
+
+    private fun copyWebhookCurl() {
+        val webhook = webhookField.text.toString().trim()
+        val endpoint = currentMcpEndpoint()
+        if (!webhook.startsWith("https://", ignoreCase = true) || endpoint.isBlank()) {
+            webhookStatus.text = "Webhook and MCP URL are required"
+            return
+        }
+        val payload = JSONObject().put("url", endpoint).toString()
+        fun quote(value: String) = "'" + value.replace("'", "'\\''") + "'"
+        val command = "curl -X POST ${quote(webhook)} -H ${quote("Content-Type: application/json")} --data ${quote(payload)}"
+        getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("DroidIME cURL", command))
+        webhookStatus.text = "cURL command copied"
     }
 
     private fun searchDictionary(rawQuery: String, output: TextView) {
