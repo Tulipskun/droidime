@@ -17,6 +17,20 @@ Native Android keyboard with Thai (Kedmanee) and English layouts.
 - Settings: enabled languages, keyboard height, light/dark/system theme, vibration (with strength), key sound, auto-capitalization, double-space period, key hints, a number row per language, and the clipboard panel.
 - In-app update check against the latest GitHub release, and a local crash log viewer.
 
+## Remote control (MCP)
+
+DroidIME includes the Android control MCP server and Cloudflare Named Tunnel.
+
+1. Start Shizuku and authorize DroidIME.
+2. In the Cloudflare Zero Trust dashboard, create a Named Tunnel and add a public hostname routed to `http://localhost:8787`.
+3. In DroidIME, open **Remote control · MCP**, enter the public hostname and tunnel token, then save.
+4. Start the MCP Server and Named Tunnel. The endpoint is `https://<hostname>/mcp`.
+5. MCP tools include tap, long press, swipe, gesture, multi-touch, key events, text input and screenshots. Action tools return a screenshot after execution.
+
+The Cloudflare token is encrypted on-device with Android Keystore. The cloudflared ARM64 runtime is fetched from a pinned Droid-MCP revision during GitHub Actions builds; it is not stored as a duplicate binary in this repository. Android 7.0 (API 24) or later is required.
+
+**Security:** The Cloudflare tunnel token authenticates the phone as a tunnel connector; it does not authenticate MCP clients. The MCP HTTP endpoint has no built-in client authentication. Configure a Cloudflare Access policy for the public hostname before exposing it to the internet.
+
 ## Install
 
 1. Install the APK.
