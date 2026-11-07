@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -48,7 +49,9 @@ class CloudflareTunnelService : Service() {
                 }
                 startTunnel(token, deviceName)
             } catch (error: Throwable) {
-                if (!stopping) setState(false, null, error.message ?: "Cloudflare Named Tunnel failed")
+                val message = error.message ?: "Cloudflare Named Tunnel failed"
+                Log.e(LOG_TAG, "Tunnel startup failed: " + redact(message), error)
+                if (!stopping) setState(false, null, message)
                 stopSelf()
             }
         }
@@ -90,8 +93,10 @@ class CloudflareTunnelService : Service() {
             while (!stopping) {
                 val line = reader.readLine() ?: break
                 if (line.isNotBlank()) {
-                    recent.addLast(line.take(500))
+                    val safeLine = redact(line).take(500)
+                    recent.addLast(safeLine)
                     while (recent.size > MAX_OUTPUT_LINES) recent.removeFirst()
+                    Log.i(LOG_TAG, safeLine)
                     val normalized = line.lowercase()
                     if (normalized.contains("registered tunnel connection") ||
                         normalized.contains("connection registered")) {
@@ -111,11 +116,13 @@ class CloudflareTunnelService : Service() {
         process = null
         if (!stopping) {
             val detail = recent.joinToString(" | ").takeLast(MAX_ERROR_CHARS)
-            setState(false, null, if (detail.isBlank()) {
+            val message = if (detail.isBlank()) {
                 "cloudflared exited with code $exitCode"
             } else {
                 "cloudflared exited with code $exitCode: $detail"
-            })
+            }
+            Log.e(LOG_TAG, redact(message))
+            setState(false, null, message)
             stopSelf()
         }
     }
@@ -160,12 +167,13 @@ class CloudflareTunnelService : Service() {
         isRunning = false
         isStarting = false
         tunnelUrl = null
-        status = "Stopped"
+        val savedError = lastError
+        status = savedError ?: "Stopped"
         getSharedPreferences("droid_mcp", MODE_PRIVATE).edit()
             .putBoolean("tunnel_running", false)
             .putString("tunnel_url", null)
-            .putString("tunnel_error", null)
-            .putString("tunnel_status", "Stopped")
+            .putString("tunnel_error", savedError)
+            .putString("tunnel_status", status)
             .apply()
         executor.shutdownNow()
         super.onDestroy()
@@ -175,6 +183,11 @@ class CloudflareTunnelService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "droidime_cloudflare"
+        private const val LOG_TAG = "DroidIMECloudflared"
+
+        private fun redact(value: String): String =
+            value.replace(Regex("(?i)(--token\\s+|token[=: ]+)\\S+")) { it.groupValues[1] + "<REDACTED>" }
+                .replace(Regex("eyJ[A-Za-z0-9+/=_-]{24,}"), "<REDACTED_TOKEN>")
         private const val NOTIFICATION_ID = 8788
         private const val MAX_OUTPUT_LINES = 12
         private const val MAX_ERROR_CHARS = 700
