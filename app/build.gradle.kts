@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.tulipskun.droidime"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 35
         // CI sets VERSION_CODE/VERSION_NAME from the workflow run number; local builds use the fallback.
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 5
@@ -19,6 +19,12 @@ android {
 
     buildFeatures {
         buildConfig = true
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     signingConfigs {
