@@ -15,6 +15,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.content.pm.PackageManager
+import android.widget.Toast
+import rikka.shizuku.Shizuku
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -43,6 +46,26 @@ class MainActivity : Activity() {
     private lateinit var downloadProgress: ProgressBar
     @Volatile private var downloading = false
     @Volatile private var destroyed = false
+    private lateinit var remoteMcpStatus: TextView
+    private lateinit var remoteTunnelStatus: TextView
+    private lateinit var remoteEndpoint: TextView
+    private lateinit var tokenSavedStatus: TextView
+    private val remotePrefs by lazy { getSharedPreferences("droid_mcp", MODE_PRIVATE) }
+    private val remoteStatusHandler = Handler(Looper.getMainLooper())
+    private val remoteStatusPoll = object : Runnable {
+        override fun run() {
+            if (!destroyed) {
+                refreshRemoteStatus()
+                remoteStatusHandler.postDelayed(this, 1000)
+            }
+        }
+    }
+    private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+        if (requestCode == SHIZUKU_PERMISSION_REQUEST) runOnUiThread {
+            Toast.makeText(this, if (grantResult == PackageManager.PERMISSION_GRANTED) "Shizuku authorized" else "Shizuku permission denied", Toast.LENGTH_SHORT).show()
+            refreshRemoteStatus()
+        }
+    }
 
     private val preferences by lazy {
         getSharedPreferences("keyboard_settings", MODE_PRIVATE)
@@ -104,6 +127,122 @@ class MainActivity : Activity() {
             manager.showInputMethodPicker()
         })
         content.addView(setupCard, sectionParams())
+
+        val remoteCard = card()
+        remoteCard.addView(sectionTitle("Remote control · MCP"))
+        remoteCard.addView(TextView(this).apply {
+            text = "Expose Android control tools through a local MCP endpoint and your Cloudflare Named Tunnel."
+            textSize = 13f
+            setTextColor(mutedColor)
+            setPadding(0, 0, 0, dp(9))
+        })
+        remoteMcpStatus = TextView(this).apply {
+            textSize = 13f
+            setTextColor(bodyColor)
+            setPadding(0, dp(3), 0, dp(5))
+        }
+        remoteCard.addView(remoteMcpStatus)
+        remoteCard.addView(actionButton("Connect / authorize Shizuku") { requestShizuku() })
+        remoteCard.addView(actionButton("Start MCP Server") { toggleMcpServer() })
+        val hostnameField = EditText(this).apply {
+            hint = "mcp.example.com"
+            textSize = 15f
+            singleLine = true
+            setText(remotePrefs.getString("tunnel_hostname", ""))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(inputColor, dp(10))
+        }
+        remoteCard.addView(TextView(this).apply {
+            text = "Named Tunnel hostname"
+            textSize = 13f
+            setTextColor(mutedColor)
+            setPadding(0, dp(12), 0, dp(5))
+        })
+        remoteCard.addView(hostnameField, LinearLayout.LayoutParams(-1, -2))
+        val tokenField = EditText(this).apply {
+            hint = "Paste Cloudflare Tunnel token"
+            textSize = 15f
+            singleLine = true
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(inputColor, dp(10))
+        }
+        remoteCard.addView(TextView(this).apply {
+            text = "Cloudflare Tunnel token"
+            textSize = 13f
+            setTextColor(mutedColor)
+            setPadding(0, dp(10), 0, dp(5))
+        })
+        remoteCard.addView(tokenField, LinearLayout.LayoutParams(-1, -2))
+        tokenSavedStatus = TextView(this).apply {
+            textSize = 12f
+            setTextColor(mutedColor)
+            setPadding(0, dp(5), 0, 0)
+        }
+        remoteCard.addView(tokenSavedStatus)
+        remoteCard.addView(actionButton("Save Named Tunnel settings") {
+            val host = hostnameField.text.toString().trim().lowercase()
+            if (!host.matches(Regex("(?i)^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")) || !host.contains(".") || host.contains("..")) {
+                Toast.makeText(this, "Enter a valid hostname", Toast.LENGTH_SHORT).show()
+            } else {
+                val newToken = tokenField.text.toString().trim()
+                try {
+                    if (newToken.isNotBlank()) TunnelTokenStore.save(this, newToken)
+                    if (TunnelTokenStore.read(this).isNullOrBlank()) {
+                        Toast.makeText(this, "Cloudflare token is required", Toast.LENGTH_SHORT).show()
+                    } else {
+                        remotePrefs.edit().putString("tunnel_hostname", host).apply()
+                        tokenField.text.clear()
+                        tokenSavedStatus.text = "Token saved encrypted on this device"
+                        refreshRemoteStatus()
+                    }
+                } catch (error: Throwable) {
+                    Toast.makeText(this, error.message ?: "Unable to save token", Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+        remoteCard.addView(actionButton("Clear saved Tunnel token") {
+            AlertDialog.Builder(this)
+                .setTitle("Delete saved token?")
+                .setMessage("The Named Tunnel will stop working until a new token is saved.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete") { _, _ ->
+                    stopService(Intent(this, CloudflareTunnelService::class.java))
+                    TunnelTokenStore.clear(this)
+                    tokenSavedStatus.text = "No token saved"
+                    refreshRemoteStatus()
+                }.show()
+        })
+        remoteTunnelStatus = TextView(this).apply {
+            textSize = 13f
+            setTextColor(bodyColor)
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        remoteCard.addView(remoteTunnelStatus)
+        remoteCard.addView(actionButton("Start Named Tunnel") { toggleNamedTunnel() })
+        remoteEndpoint = TextView(this).apply {
+            textSize = 13f
+            setTextColor(mutedColor)
+            setPadding(0, dp(7), 0, dp(4))
+        }
+        remoteCard.addView(remoteEndpoint)
+        remoteCard.addView(actionButton("Copy MCP endpoint") {
+            val url = remoteEndpoint.text.toString().removePrefix("Endpoint: ").trim()
+            if (url.startsWith("https://") || url.startsWith("http://")) {
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("DroidIME MCP", url))
+                Toast.makeText(this, "MCP endpoint copied", Toast.LENGTH_SHORT).show()
+            }
+        })
+        val autoStart = Switch(this).apply {
+            text = "Start MCP and Named Tunnel after reboot"
+            textSize = 14f
+            isChecked = remotePrefs.getBoolean("auto_start", false)
+            setOnCheckedChangeListener { _, checked -> remotePrefs.edit().putBoolean("auto_start", checked).apply() }
+        }
+        remoteCard.addView(autoStart)
+        content.addView(remoteCard, sectionParams())
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+        refreshRemoteStatus()
 
         val testCard = card()
         testCard.addView(sectionTitle("Try the keyboard"))
@@ -353,6 +492,100 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::setupStatus.isInitialized) refreshSetupStatus()
+        remoteStatusHandler.removeCallbacks(remoteStatusPoll)
+        remoteStatusHandler.post(remoteStatusPoll)
+    }
+
+    override fun onPause() {
+        remoteStatusHandler.removeCallbacks(remoteStatusPoll)
+        super.onPause()
+    }
+
+    private fun requestShizuku() {
+        try {
+            if (!Shizuku.pingBinder()) {
+                remoteMcpStatus.text = "Shizuku is not running. Start Shizuku first."
+                return
+            }
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                remoteMcpStatus.text = "Shizuku authorized"
+            } else {
+                Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST)
+                remoteMcpStatus.text = "Waiting for Shizuku authorization…"
+            }
+        } catch (error: Throwable) {
+            remoteMcpStatus.text = error.message ?: "Shizuku unavailable"
+        }
+    }
+
+    private fun toggleMcpServer() {
+        if (McpService.isRunning) {
+            stopService(Intent(this, CloudflareTunnelService::class.java))
+            stopService(Intent(this, McpService::class.java))
+            refreshRemoteStatus()
+            return
+        }
+        try {
+            if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                requestShizuku()
+                return
+            }
+            val intent = Intent(this, McpService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+            remoteMcpStatus.text = "Starting MCP Server…"
+        } catch (error: Throwable) {
+            remoteMcpStatus.text = error.message ?: "Unable to start MCP Server"
+        }
+    }
+
+    private fun toggleNamedTunnel() {
+        if (CloudflareTunnelService.isRunning || remotePrefs.getBoolean("tunnel_running", false)) {
+            stopService(Intent(this, CloudflareTunnelService::class.java))
+            refreshRemoteStatus()
+            return
+        }
+        try {
+            val host = remotePrefs.getString("tunnel_hostname", "").orEmpty()
+            if (host.isBlank() || TunnelTokenStore.read(this).isNullOrBlank()) {
+                Toast.makeText(this, "Save the hostname and Tunnel token first", Toast.LENGTH_LONG).show()
+                return
+            }
+            if (!McpService.isRunning) {
+                if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                    requestShizuku()
+                    return
+                }
+                val mcp = Intent(this, McpService::class.java)
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(mcp) else startService(mcp)
+            }
+            val tunnel = Intent(this, CloudflareTunnelService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(tunnel) else startService(tunnel)
+            remoteTunnelStatus.text = "Starting Named Tunnel…"
+        } catch (error: Throwable) {
+            remoteTunnelStatus.text = error.message ?: "Unable to start Named Tunnel"
+        }
+    }
+
+    private fun refreshRemoteStatus() {
+        if (!::remoteMcpStatus.isInitialized) return
+        val prefs = remotePrefs
+        val mcpRunning = McpService.isRunning
+        remoteMcpStatus.text = "MCP Server: " + if (mcpRunning) "Running · 0.0.0.0:8787" else "Stopped"
+        val tunnelRunning = CloudflareTunnelService.isRunning
+        val savedStatus = prefs.getString("tunnel_status", null)
+        val savedError = prefs.getString("tunnel_error", null)
+        remoteTunnelStatus.text = "Named Tunnel: " + when {
+            tunnelRunning -> CloudflareTunnelService.status
+            savedError != null -> savedError
+            savedStatus != null && savedStatus != "Stopped" -> savedStatus
+            else -> "Stopped"
+        }
+        val host = prefs.getString("tunnel_hostname", "").orEmpty()
+        val url = CloudflareTunnelService.tunnelUrl ?: if (host.isNotBlank()) "https://$host/mcp" else ""
+        remoteEndpoint.text = if (url.isBlank()) "Endpoint: configure a hostname" else "Endpoint: $url"
+        tokenSavedStatus.text = if (try { !TunnelTokenStore.read(this).isNullOrBlank() } catch (_: Throwable) { false }) {
+            "Token saved encrypted on this device"
+        } else "No token saved"
     }
 
     private fun searchDictionary(rawQuery: String, output: TextView) {
@@ -720,6 +953,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val MAX_ATTEMPTS = 3
+        private const val SHIZUKU_PERMISSION_REQUEST = 2001
     }
 
     private fun exportTouchHistory() {
@@ -754,6 +988,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         destroyed = true
+        remoteStatusHandler.removeCallbacksAndMessages(null)
+        Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
         executor.shutdownNow()
         super.onDestroy()
     }
