@@ -42,6 +42,16 @@ object ToolCatalog {
             "text" to JSONObject().put("type", "string"),
             required = listOf("text")
         )))
+        put(tool("inspect_ui", "Read the current Android UI hierarchy, including visible text, content descriptions, resource IDs, classes, bounds, and clickability.", schema()))
+        put(tool("find_and_tap", "Find a visible Android UI element by text, content description, or resource ID and tap its center using Shizuku.", schema(
+            "query" to JSONObject().put("type", "string"),
+            required = listOf("query")
+        )))
+        put(tool("wait_for_ui", "Wait until visible UI hierarchy contains the requested text, description, or resource ID.", schema(
+            "query" to JSONObject().put("type", "string"),
+            "timeout_ms" to integer("maximum 30000 milliseconds, default 10000"),
+            required = listOf("query")
+        )))
         put(tool("screenshot", "Capture the current screen as PNG.", schema()))
     }
 
