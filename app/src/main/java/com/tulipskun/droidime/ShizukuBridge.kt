@@ -162,7 +162,22 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         val size = screenSize()
         val px = percentToPixel(x, size.width)
         val py = percentToPixel(y, size.height)
-        runCommand("input tap $px $py")
+
+        // Direct binder injection: `input tap` costs a full shell process per tap.
+        val downTime = SystemClock.uptimeMillis()
+        val pointerIds = intArrayOf(0)
+        val positions = arrayOf(intArrayOf(px, py))
+
+        injectMotionEvent(
+            createMotionEvent(downTime, MotionEvent.ACTION_DOWN, pointerIds, positions)
+        )
+        try {
+            Thread.sleep(TAP_HOLD_MILLIS)
+        } finally {
+            injectMotionEvent(
+                createMotionEvent(downTime, MotionEvent.ACTION_UP, pointerIds, positions)
+            )
+        }
     }
 
     fun longPress(x: String, y: String, durationMs: Long) {
@@ -195,7 +210,40 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         val py1 = percentToPixel(y1, size.height)
         val px2 = percentToPixel(x2, size.width)
         val py2 = percentToPixel(y2, size.height)
-        runCommand("input swipe $px1 $py1 $px2 $py2 $durationMs")
+
+        // Direct binder injection with interpolated MOVE events, so a swipe does
+        // not wait on a shell process and keeps a smooth motion path.
+        val downTime = SystemClock.uptimeMillis()
+        val pointerIds = intArrayOf(0)
+        val positions = arrayOf(intArrayOf(px1, py1))
+
+        injectMotionEvent(
+            createMotionEvent(downTime, MotionEvent.ACTION_DOWN, pointerIds, positions)
+        )
+
+        val stepDelay = if (durationMs > 0) durationMs / SWIPE_STEPS else 0L
+
+        try {
+            for (step in 1..SWIPE_STEPS) {
+                val fraction = step.toFloat() / SWIPE_STEPS
+                positions[0][0] = (px1 + (px2 - px1) * fraction).toInt()
+                positions[0][1] = (py1 + (py2 - py1) * fraction).toInt()
+
+                injectMotionEvent(
+                    createMotionEvent(downTime, MotionEvent.ACTION_MOVE, pointerIds, positions)
+                )
+
+                if (stepDelay > 0) {
+                    Thread.sleep(stepDelay)
+                }
+            }
+        } finally {
+            positions[0][0] = px2
+            positions[0][1] = py2
+            injectMotionEvent(
+                createMotionEvent(downTime, MotionEvent.ACTION_UP, pointerIds, positions)
+            )
+        }
     }
 
     fun gesture(points: JSONArray) {
@@ -366,12 +414,25 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
     private data class ScreenSize(val width: Int, val height: Int)
 
+    // `wm size` reports the natural display size and does not change on rotation,
+    // so it is resolved once instead of spawning a shell for every gesture.
+    @Volatile
+    private var cachedScreenSize: ScreenSize? = null
+
+    fun invalidateScreenSize() {
+        cachedScreenSize = null
+    }
+
     private fun screenSize(): ScreenSize {
+        cachedScreenSize?.let { return it }
+
         val output = runCommand("wm size").stdout.toString(StandardCharsets.UTF_8)
         val match = Regex("[0-9]+x[0-9]+").findAll(output).lastOrNull()
             ?: throw IllegalStateException("Unable to determine screen size")
         val parts = match.value.split("x")
-        return ScreenSize(parts[0].toInt(), parts[1].toInt())
+        val size = ScreenSize(parts[0].toInt(), parts[1].toInt())
+        cachedScreenSize = size
+        return size
     }
 
     private fun percentToPixel(value: String, size: Int): Int {
@@ -691,6 +752,27 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
 
+    /**
+     * Dumps the accessibility hierarchy as XML. A text tree is far cheaper to
+     * ship to a model than a PNG, and it carries bounds + resource ids that a
+     * screenshot does not, so agents can act without vision on every step.
+     */
+    fun uiHierarchy(): String {
+        val remote = "/data/local/tmp/droid_mcp_ui.xml"
+
+        runCommand("uiautomator dump " + remote + " >/dev/null 2>&1 || true")
+        val xml = runCommand("cat " + remote).stdout.toString(StandardCharsets.UTF_8)
+
+        if (xml.isBlank()) {
+            throw IllegalStateException(
+                "uiautomator produced no hierarchy; the foreground app may block accessibility dumps"
+            )
+        }
+
+        runCommand("rm -f " + remote + " >/dev/null 2>&1 || true")
+        return xml
+    }
+
     fun screenshot(): ByteArray {
         val png = runCommand("screencap -p").stdout
         val source = BitmapFactory.decodeByteArray(png, 0, png.size)
@@ -733,6 +815,8 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
     companion object {
         private const val MAX_SCREENSHOT_EDGE = 1500
+        private const val TAP_HOLD_MILLIS = 40L
+        private const val SWIPE_STEPS = 12
         private const val INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT = 1
         private const val COMMAND_TIMEOUT_SECONDS = 15L
         private const val COMMAND_STREAM_JOIN_MILLIS = 1000L

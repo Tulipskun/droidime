@@ -50,84 +50,98 @@ class McpServer(
             val output = BufferedOutputStream(s.getOutputStream())
 
             try {
+                // Idle keep-alive connections are dropped instead of pinning a thread.
+                s.soTimeout = KEEP_ALIVE_TIMEOUT_MILLIS
                 val input = BufferedInputStream(s.getInputStream())
-                val requestLine = readLine(input) ?: return
-                val parts = requestLine.split(" ")
 
-                if (parts.size < 2) {
-                    writeResponse(output, 400, "application/json", error(null, -32600, "Invalid HTTP request"))
-                    return
-                }
+                while (running) {
+                    val requestLine = readLine(input) ?: return
+                    if (requestLine.isBlank()) continue
 
-                val method = parts[0]
-                val path = parts[1].substringBefore('?')
-                val headers = readHeaders(input)
+                    val parts = requestLine.split(" ")
 
-                if (path != endpointPath) {
-                    writeResponse(output, 404, "application/json", error(null, -32601, "Not found"))
-                    return
-                }
+                    if (parts.size < 2) {
+                        writeResponse(output, 400, "application/json", error(null, -32600, "Invalid HTTP request"))
+                        return
+                    }
 
-                if (method == "OPTIONS") {
-                    writeResponse(output, 204, null, null, cors = true)
-                    return
-                }
+                    val method = parts[0]
+                    val path = parts[1].substringBefore('?')
+                    val headers = readHeaders(input)
+                    val keepAlive = headers["connection"]?.lowercase()?.contains("keep-alive") == true
 
-                if (method != "POST") {
+                    if (path != endpointPath) {
+                        writeResponse(output, 404, "application/json", error(null, -32601, "Not found"), keepAlive = keepAlive)
+                        if (keepAlive) continue else return
+                    }
+
+                    if (method == "OPTIONS") {
+                        writeResponse(output, 204, null, null, cors = true, keepAlive = keepAlive)
+                        if (keepAlive) continue else return
+                    }
+
+                    if (method != "POST") {
+                        writeResponse(
+                            output,
+                            405,
+                            "application/json",
+                            error(null, -32601, "Method not allowed"),
+                            cors = true,
+                            keepAlive = keepAlive
+                        )
+                        if (keepAlive) continue else return
+                    }
+
+                    val origin = headers["origin"]
+                    if (origin != null && origin != "null") {
+                        writeResponse(
+                            output,
+                            403,
+                            "application/json",
+                            error(null, -32000, "Invalid Origin"),
+                            cors = true,
+                            keepAlive = keepAlive
+                        )
+                        if (keepAlive) continue else return
+                    }
+
+                    val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
+                    if (contentLength <= 0 || contentLength > MAX_BODY) {
+                        writeResponse(
+                            output,
+                            400,
+                            "application/json",
+                            error(null, -32600, "Invalid Content-Length"),
+                            cors = true,
+                            keepAlive = keepAlive
+                        )
+                        if (keepAlive) continue else return
+                    }
+
+                    val request = JSONObject(
+                        String(readExactly(input, contentLength), StandardCharsets.UTF_8)
+                    )
+
+                    val requestMethod = request.optString("method")
+
+                    if (requestMethod.startsWith("notifications/")) {
+                        writeResponse(output, 202, null, null, cors = true, keepAlive = keepAlive)
+                        if (keepAlive) continue else return
+                    }
+
+                    val response = dispatch(request, headers)
+
                     writeResponse(
                         output,
-                        405,
+                        200,
                         "application/json",
-                        error(null, -32601, "Method not allowed"),
-                        cors = true
+                        response.toString(),
+                        cors = true,
+                        keepAlive = keepAlive
                     )
-                    return
+
+                    if (!keepAlive) return
                 }
-
-                val origin = headers["origin"]
-                if (origin != null && origin != "null") {
-                    writeResponse(
-                        output,
-                        403,
-                        "application/json",
-                        error(null, -32000, "Invalid Origin"),
-                        cors = true
-                    )
-                    return
-                }
-
-                val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-                if (contentLength <= 0 || contentLength > MAX_BODY) {
-                    writeResponse(
-                        output,
-                        400,
-                        "application/json",
-                        error(null, -32600, "Invalid Content-Length"),
-                        cors = true
-                    )
-                    return
-                }
-
-                val request = JSONObject(
-                    String(readExactly(input, contentLength), StandardCharsets.UTF_8)
-                )
-
-                val requestMethod = request.optString("method")
-
-                if (requestMethod.startsWith("notifications/")) {
-                    writeResponse(output, 202, null, null, cors = true)
-                    return
-                }
-
-                val response = dispatch(request, headers)
-
-                writeResponse(
-                    output,
-                    200,
-                    "application/json",
-                    response.toString(),
-                    cors = true
-                )
             } catch (e: ProtocolException) {
                 writeResponse(
                     output,
@@ -300,6 +314,18 @@ class McpServer(
                     executor.inputText(args.getString("text"))
                 }
 
+                "ui_hierarchy" -> {
+                    val xml = executor.uiHierarchy()
+
+                    JSONObject()
+                        .put("resultType", "complete")
+                        .put(
+                            "content",
+                            JSONArray().put(toolTextItem(xml))
+                        )
+                        .put("isError", false)
+                }
+
                 "screenshot" -> {
                     val png = executor.screenshot()
 
@@ -459,7 +485,8 @@ class McpServer(
         status: Int,
         contentType: String?,
         body: Any?,
-        cors: Boolean = false
+        cors: Boolean = false,
+        keepAlive: Boolean = false
     ) {
         val bytes = body?.toString()?.toByteArray(StandardCharsets.UTF_8) ?: ByteArray(0)
 
@@ -469,7 +496,7 @@ class McpServer(
                 .append(' ')
                 .append(statusText(status))
                 .append("\r\n")
-            append("Connection: close\r\n")
+            append(if (keepAlive) "Connection: keep-alive\r\n" else "Connection: close\r\n")
             if (cors) {
                 append("Access-Control-Allow-Origin: null\r\n")
                 append("Access-Control-Allow-Methods: POST, OPTIONS\r\n")
@@ -517,7 +544,10 @@ class McpServer(
         )
         private const val UNSUPPORTED_PROTOCOL_VERSION = -32602
         private const val MAX_BODY = 1024 * 1024
-        private const val SCREENSHOT_DELAY_MILLIS = 1000L
+        // Settle time before the post-action screenshot. 1000ms dominated every
+        // action round trip; 250ms still covers the usual frame + animation start.
+        private const val SCREENSHOT_DELAY_MILLIS = 250L
+        private const val KEEP_ALIVE_TIMEOUT_MILLIS = 30_000
         private const val DEFAULT_LONG_PRESS_DURATION_MILLIS = 3000L
     }
 }

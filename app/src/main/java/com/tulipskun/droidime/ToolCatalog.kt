@@ -43,6 +43,7 @@ object ToolCatalog {
             required = listOf("text")
         )))
         put(tool("screenshot", "Capture the current screen as PNG.", schema()))
+        put(tool("ui_hierarchy", "Dump the accessibility hierarchy as XML: text, resource ids and pixel bounds for every visible node. Cheaper than a screenshot and precise enough to tap by bounds.", schema()))
     }
 
     private fun pointArray(): JSONObject =
