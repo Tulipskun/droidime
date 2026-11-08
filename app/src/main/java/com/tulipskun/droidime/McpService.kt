@@ -31,13 +31,15 @@ class McpService : Service() {
         startForeground(NOTIFICATION_ID, notification)
 
         val preferences = getSharedPreferences("droid_mcp", MODE_PRIVATE)
+        // The switch in MainActivity writes to keyboard_settings, not droid_mcp.
+        val uiPreferences = getSharedPreferences("keyboard_settings", MODE_PRIVATE)
         try {
             val deviceName = DeviceEndpoint.getOrCreateName(this)
 
             // The overlay is best-effort: without the draw-over-apps permission the
             // pointer is simply invisible and every tool still works.
             val pointerOverlay = PointerOverlay(this).also {
-                it.setEnabled(preferences.getBoolean("pointer_overlay", true))
+                it.setEnabled(uiPreferences.getBoolean("pointer_overlay", true))
                 overlay = it
             }
 

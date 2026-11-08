@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 object ToolCatalog {
     fun definitions(): JSONArray = JSONArray().apply {
-        put(tool("tap", "Tap a screen coordinate using percentages of the current screen.", schema(
+        put(tool("tap", "Tap a pixel coordinate on the current screen.", schema(
             "x" to pixel("horizontal pixel offset from the left edge, e.g. 540"),
             "y" to pixel("vertical pixel offset from the top edge, e.g. 600"),
             required = listOf("x", "y")
@@ -16,7 +16,7 @@ object ToolCatalog {
             "duration_ms" to integer("hold duration in milliseconds, default 3000, minimum 200"),
             required = listOf("x", "y")
         )))
-        put(tool("swipe", "Swipe between percentage screen coordinates.", schema(
+        put(tool("swipe", "Swipe between pixel screen coordinates.", schema(
             "x1" to pixel("start horizontal pixel offset, e.g. 108"),
             "y1" to pixel("start vertical pixel offset, e.g. 1920"),
             "x2" to pixel("end horizontal pixel offset, e.g. 972"),
@@ -67,7 +67,7 @@ object ToolCatalog {
         put(tool("act_and_observe", "Run one action, wait for the UI to settle, then return a screenshot. Use only when you need the screen right after acting; prefer a bare action plus a separate screenshot when you do not.", schema(
             "action" to JSONObject()
                 .put("type", "object")
-                .put("description", "the action to run, e.g. {\"name\":\"tap\",\"x\":\"50%\",\"y\":\"25%\"}"),
+                .put("description", "the action to run, e.g. {\"name\":\"tap\",\"x\":540,\"y\":1200}"),
             "settle_ms" to integer("how long to wait before capturing, default 400"),
             "include_image" to JSONObject().put("type", "boolean").put("description", "return a screenshot, default true"),
             required = listOf("action")

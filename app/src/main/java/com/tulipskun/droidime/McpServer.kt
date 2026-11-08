@@ -291,23 +291,23 @@ class McpServer(
                 // --- Actuation only. No screenshot, no settle: the caller decides
                 // when to observe, exactly like ARTEMIS's act-then-observe split.
                 "tap" -> toolText("tap completed") {
-                    executor.tap(args.getString("x"), args.getString("y"))
+                    executor.tap(args.optString("x"), args.optString("y"))
                 }
 
                 "long_press" -> toolText("long_press completed") {
                     executor.longPress(
-                        args.getString("x"),
-                        args.getString("y"),
+                        args.optString("x"),
+                        args.optString("y"),
                         args.optLong("duration_ms", DEFAULT_LONG_PRESS_DURATION_MILLIS)
                     )
                 }
 
                 "swipe" -> toolText("swipe completed") {
                     executor.swipe(
-                        args.getString("x1"),
-                        args.getString("y1"),
-                        args.getString("x2"),
-                        args.getString("y2"),
+                        args.optString("x1"),
+                        args.optString("y1"),
+                        args.optString("x2"),
+                        args.optString("y2"),
                         args.getLong("duration_ms")
                     )
                 }

@@ -11,17 +11,22 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.util.Log
 
 /**
  * Draws a visible pointer on top of every app so a human can see where the agent
  * is about to act.
  *
- * The window is never touchable and never focusable, so it cannot intercept or
- * disturb the very input events it is illustrating. Every animation is driven on
- * the main thread and removes itself when it finishes, so an idle overlay costs
- * nothing.
+ * The cursor stays on screen between actions (it does not disappear after the
+ * tap animation ends), so a person watching the device can always see the last
+ * position the agent used. The window is never touchable and never focusable,
+ * so it cannot intercept or disturb the input events it is illustrating.
  */
 class PointerOverlay(private val context: Context) {
+
+    private companion object {
+        const val TAG = "DroidIME-Pointer"
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private var windowManager: WindowManager? = null
@@ -32,6 +37,7 @@ class PointerOverlay(private val context: Context) {
 
     fun setEnabled(value: Boolean) {
         enabled = value
+        Log.d(TAG, "setEnabled($value)")
         if (!value) {
             main.post { detach() }
         }
@@ -40,7 +46,10 @@ class PointerOverlay(private val context: Context) {
     fun isEnabled(): Boolean = enabled
 
     fun showTap(x: Int, y: Int) {
-        if (!enabled) return
+        if (!enabled) {
+            Log.d(TAG, "showTap skipped: overlay disabled")
+            return
+        }
         main.post {
             val v = ensureWindow() ?: return@post
             v.animateTap(x.toFloat(), y.toFloat())
@@ -48,7 +57,10 @@ class PointerOverlay(private val context: Context) {
     }
 
     fun showLongPress(x: Int, y: Int, durationMs: Long) {
-        if (!enabled) return
+        if (!enabled) {
+            Log.d(TAG, "showLongPress skipped: overlay disabled")
+            return
+        }
         main.post {
             val v = ensureWindow() ?: return@post
             v.animateHold(x.toFloat(), y.toFloat(), durationMs)
@@ -56,7 +68,10 @@ class PointerOverlay(private val context: Context) {
     }
 
     fun showSwipe(x1: Int, y1: Int, x2: Int, y2: Int) {
-        if (!enabled) return
+        if (!enabled) {
+            Log.d(TAG, "showSwipe skipped: overlay disabled")
+            return
+        }
         main.post {
             val v = ensureWindow() ?: return@post
             v.animateSwipe(x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat())
@@ -67,7 +82,7 @@ class PointerOverlay(private val context: Context) {
         view?.let { return it }
 
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return null
-        val created = PointerView(context)
+        val created = PointerView(context).also { it.setWillNotDraw(false) }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -75,13 +90,13 @@ class PointerOverlay(private val context: Context) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
+            alpha = 1f
             // Keep it above normal app content but below the status bar / IME.
             if (android.os.Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode =
@@ -93,9 +108,11 @@ class PointerOverlay(private val context: Context) {
             wm.addView(created, params)
             windowManager = wm
             view = created
+            Log.d(TAG, "overlay window added")
             created
         } catch (e: Throwable) {
             // No overlay permission: the agent still works, it just is not visible.
+            Log.e(TAG, "addView failed, pointer will be invisible", e)
             null
         }
     }
@@ -116,10 +133,14 @@ class PointerOverlay(private val context: Context) {
      */
     private class PointerView(context: Context) : View(context) {
 
-        private enum class Mode { NONE, TAP, HOLD, SWIPE }
+        private enum class Mode { IDLE, TAP, HOLD, SWIPE }
 
-        private var mode = Mode.NONE
+        private var mode = Mode.IDLE
         private var progress = 0f
+
+        private var lastX = 0f
+        private var lastY = 0f
+        private var hasPosition = false
 
         private var startX = 0f
         private var startY = 0f
@@ -178,7 +199,8 @@ class PointerOverlay(private val context: Context) {
                 progress += STEP
                 if (progress >= 1f) {
                     progress = 1f
-                    mode = Mode.NONE
+                    // Keep a persistent cursor instead of clearing the canvas.
+                    mode = Mode.IDLE
                     invalidate()
                     return
                 }
@@ -188,6 +210,9 @@ class PointerOverlay(private val context: Context) {
         }
 
         fun animateTap(x: Float, y: Float) {
+            lastX = x
+            lastY = y
+            hasPosition = true
             startX = x
             startY = y
             endX = x
@@ -200,6 +225,9 @@ class PointerOverlay(private val context: Context) {
         }
 
         fun animateHold(x: Float, y: Float, durationMs: Long) {
+            lastX = x
+            lastY = y
+            hasPosition = true
             startX = x
             startY = y
             endX = x
@@ -213,6 +241,9 @@ class PointerOverlay(private val context: Context) {
         }
 
         fun animateSwipe(x1: Float, y1: Float, x2: Float, y2: Float) {
+            lastX = x2
+            lastY = y2
+            hasPosition = true
             startX = x1
             startY = y1
             endX = x2
@@ -232,15 +263,47 @@ class PointerOverlay(private val context: Context) {
             postOnAnimation(tick)
         }
 
-        override fun onDraw(canvas: Canvas) {
-            if (mode == Mode.NONE) return
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            if (!hasPosition && w > 0 && h > 0) {
+                lastX = w / 2f
+                lastY = h / 2f
+                hasPosition = true
+                invalidate()
+            }
+        }
 
+        override fun onDraw(canvas: Canvas) {
             when (mode) {
+                Mode.IDLE -> drawIdle(canvas)
                 Mode.TAP -> drawTap(canvas)
                 Mode.HOLD -> drawHold(canvas)
                 Mode.SWIPE -> drawSwipe(canvas)
-                Mode.NONE -> Unit
             }
+        }
+
+        /** A cursor that remains visible between actions. */
+        private fun drawIdle(canvas: Canvas) {
+            val x = lastX
+            val y = lastY
+
+            ring.alpha = 230
+            canvas.drawCircle(x, y, 20f, ring)
+            innerRing.alpha = 150
+            canvas.drawCircle(x, y, 34f, innerRing)
+
+            dot.alpha = 255
+            canvas.drawCircle(x, y, 8f, dot)
+
+            cross.alpha = 235
+            canvas.drawLine(x - 46f, y, x - 20f, y, cross)
+            canvas.drawLine(x + 20f, y, x + 46f, y, cross)
+            canvas.drawLine(x, y - 46f, x, y - 20f, cross)
+            canvas.drawLine(x, y + 20f, x, y + 46f, cross)
+
+            label.setLength(0)
+            label.append(x.toInt()).append(", ").append(y.toInt())
+            drawLabel(canvas, x, y, 1f)
         }
 
         private fun drawTap(canvas: Canvas) {
@@ -318,10 +381,10 @@ class PointerOverlay(private val context: Context) {
             if (label.isEmpty()) return
 
             val text = label.toString()
-            val width = labelText.measureText(text)
+            val textWidth = labelText.measureText(text)
             val padH = 18f
             val padV = 14f
-            val boxW = width + padH * 2
+            val boxW = textWidth + padH * 2
             val boxH = labelText.textSize + padV * 2
 
             // Place above the pointer, flipping below when it would leave the screen.
@@ -329,8 +392,8 @@ class PointerOverlay(private val context: Context) {
             if (boxTop < 24f) boxTop = y + 70f
             var boxLeft = x - boxW / 2f
             if (boxLeft < 12f) boxLeft = 12f
-            if (boxLeft + boxW > width.toFloat() - 12f) {
-                boxLeft = width.toFloat() - 12f - boxW
+            if (boxLeft + boxW > this.width.toFloat() - 12f) {
+                boxLeft = this.width.toFloat() - 12f - boxW
             }
 
             labelBg.alpha = (200 * fade).toInt().coerceIn(0, 255)
@@ -351,8 +414,8 @@ class PointerOverlay(private val context: Context) {
         }
 
         private companion object {
-            // ~700ms at 60fps.
-            const val STEP = 0.024f
+            // ~1.4s at 60fps, plus a persistent cursor afterwards.
+            const val STEP = 0.012f
         }
     }
 }

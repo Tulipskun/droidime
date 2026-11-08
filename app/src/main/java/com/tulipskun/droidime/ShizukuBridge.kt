@@ -298,8 +298,8 @@ class ShizukuBridge(
 
         for (i in 0 until points.length()) {
             val point = points.getJSONObject(i)
-            xs[i] = toPixel(point.getString("x"), size.width)
-            ys[i] = toPixel(point.getString("y"), size.height)
+            xs[i] = toPixel(point.opt("x").toString(), size.width)
+            ys[i] = toPixel(point.opt("y").toString(), size.height)
             delays[i] = point.optLong("delay_ms", 0L)
 
             require(delays[i] >= 0) {
@@ -379,8 +379,8 @@ class ShizukuBridge(
 
             for (i in 0 until count) {
                 val point = pointArrays[i]!!.getJSONObject(0)
-                positions[i][0] = toPixel(point.getString("x"), size.width)
-                positions[i][1] = toPixel(point.getString("y"), size.height)
+                positions[i][0] = toPixel(point.opt("x").toString(), size.width)
+                positions[i][1] = toPixel(point.opt("y").toString(), size.height)
             }
 
             val downTime = SystemClock.uptimeMillis()
@@ -426,8 +426,8 @@ class ShizukuBridge(
                     }
 
                     delayMs = maxOf(delayMs, delay)
-                    positions[i][0] = toPixel(point.getString("x"), size.width)
-                    positions[i][1] = toPixel(point.getString("y"), size.height)
+                    positions[i][0] = toPixel(point.opt("x").toString(), size.width)
+                    positions[i][1] = toPixel(point.opt("y").toString(), size.height)
                 }
 
                 if (delayMs > 0) {
