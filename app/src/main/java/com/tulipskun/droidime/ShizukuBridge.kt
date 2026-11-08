@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 import org.json.JSONArray
+import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
@@ -721,6 +722,107 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
             }
             source.recycle()
         }
+    }
+
+
+    fun inspectUi(): JSONArray {
+        val xml = runCommand("uiautomator dump /sdcard/droidime_window.xml >/dev/null 2>&1 && cat /sdcard/droidime_window.xml").stdout
+            .toString(StandardCharsets.UTF_8)
+        if (!xml.contains("<hierarchy")) {
+            throw IllegalStateException("Unable to read Android UI hierarchy")
+        }
+
+        val result = JSONArray()
+        val nodePattern = Regex("<node\\s+([^>]*?)/?>")
+        val attributePattern = Regex("([A-Za-z_-]+)=\"([^\"]*)\"")
+        val boundsPattern = Regex("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]")
+
+        for (match in nodePattern.findAll(xml).take(250)) {
+            val attrs = attributePattern.findAll(match.groupValues[1])
+                .associate { it.groupValues[1] to it.groupValues[2] }
+            val text = attrs["text"].orEmpty()
+            val desc = attrs["content-desc"].orEmpty()
+            val resource = attrs["resource-id"].orEmpty()
+            val bounds = attrs["bounds"].orEmpty()
+            if (text.isBlank() && desc.isBlank() && resource.isBlank()) continue
+            result.put(
+                JSONObject()
+                    .put("text", text)
+                    .put("contentDescription", desc)
+                    .put("resourceId", resource)
+                    .put("className", attrs["class"].orEmpty())
+                    .put("clickable", attrs["clickable"] == "true")
+                    .put("enabled", attrs["enabled"] != "false")
+                    .put("bounds", bounds)
+            )
+        }
+        return result
+    }
+
+    fun findAndTapUi(query: String): JSONObject {
+        require(query.isNotBlank()) { "query must not be empty" }
+        val xml = runCommand("uiautomator dump /sdcard/droidime_window.xml >/dev/null 2>&1 && cat /sdcard/droidime_window.xml").stdout
+            .toString(StandardCharsets.UTF_8)
+        if (!xml.contains("<hierarchy")) {
+            throw IllegalStateException("Unable to read Android UI hierarchy")
+        }
+
+        val nodePattern = Regex("<node\\s+([^>]*?)/?>")
+        val attributePattern = Regex("([A-Za-z_-]+)=\"([^\"]*)\"")
+        val boundsPattern = Regex("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]")
+        val target = query.trim().lowercase()
+        val candidates = nodePattern.findAll(xml).mapNotNull { match ->
+            val attrs = attributePattern.findAll(match.groupValues[1])
+                .associate { it.groupValues[1] to it.groupValues[2] }
+            val text = attrs["text"].orEmpty()
+            val desc = attrs["content-desc"].orEmpty()
+            val resource = attrs["resource-id"].orEmpty()
+            val matchValue = listOf(text, desc, resource).joinToString(" ").lowercase()
+            if (!matchValue.contains(target) || attrs["enabled"] == "false") return@mapNotNull null
+            val bounds = boundsPattern.find(attrs["bounds"].orEmpty()) ?: return@mapNotNull null
+            val left = bounds.groupValues[1].toInt()
+            val top = bounds.groupValues[2].toInt()
+            val right = bounds.groupValues[3].toInt()
+            val bottom = bounds.groupValues[4].toInt()
+            if (right <= left || bottom <= top) return@mapNotNull null
+            val score = (if (attrs["clickable"] == "true") 4 else 0) +
+                (if (text.equals(query, true) || desc.equals(query, true) || resource.endsWith("/$query")) 8 else 0)
+            Triple(attrs, intArrayOf(left, top, right, bottom), score)
+        }.sortedByDescending { it.third }.firstOrNull()
+            ?: throw IllegalArgumentException("No visible UI element matched: $query")
+
+        val size = screenSize()
+        val bounds = candidates.second
+        val centerX = (bounds[0] + bounds[2]) / 2.0
+        val centerY = (bounds[1] + bounds[3]) / 2.0
+        val x = (centerX * 100.0 / size.width).coerceIn(0.0, 100.0)
+        val y = (centerY * 100.0 / size.height).coerceIn(0.0, 100.0)
+        tap("$x%", "$y%")
+
+        return JSONObject()
+            .put("matchedText", candidates.first["text"].orEmpty())
+            .put("contentDescription", candidates.first["content-desc"].orEmpty())
+            .put("resourceId", candidates.first["resource-id"].orEmpty())
+            .put("bounds", candidates.first["bounds"].orEmpty())
+            .put("tapX", "$x%")
+            .put("tapY", "$y%")
+    }
+
+    fun waitForUiText(query: String, timeoutMs: Long): JSONObject {
+        require(timeoutMs in 0L..30000L) { "timeout_ms must be between 0 and 30000" }
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        do {
+            val nodes = inspectUi()
+            for (i in 0 until nodes.length()) {
+                val node = nodes.getJSONObject(i)
+                val value = (node.optString("text") + " " + node.optString("contentDescription") + " " + node.optString("resourceId"))
+                if (value.contains(query, ignoreCase = true)) {
+                    return JSONObject().put("found", true).put("element", node)
+                }
+            }
+            if (SystemClock.elapsedRealtime() < deadline) Thread.sleep(400)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        return JSONObject().put("found", false).put("query", query)
     }
 
     fun close() {
