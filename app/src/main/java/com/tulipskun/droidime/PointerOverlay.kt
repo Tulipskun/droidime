@@ -6,11 +6,13 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.util.DisplayMetrics
 import android.util.Log
 
 /**
@@ -98,15 +100,33 @@ class PointerOverlay(private val context: Context) {
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun ensureWindow(): PointerView? {
         view?.let { return it }
 
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return null
         val created = PointerView(context).also { it.setWillNotDraw(false) }
 
+        // MATCH_PARENT resolves to the inset frame (2264px on a 2400px display),
+        // which clips a pointer near the bottom edge. Ask for the full display
+        // size explicitly so every coordinate from screen_size is drawable.
+        val full = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = wm.maximumWindowMetrics.bounds
+                bounds.width() to bounds.height()
+            } else {
+                val metrics = DisplayMetrics()
+                wm.defaultDisplay.getRealMetrics(metrics)
+                metrics.widthPixels to metrics.heightPixels
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        Log.d(TAG, "overlay size = " + (full?.first ?: -1) + "x" + (full?.second ?: -1))
+
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
+            full?.first ?: WindowManager.LayoutParams.MATCH_PARENT,
+            full?.second ?: WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
