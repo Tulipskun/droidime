@@ -221,7 +221,7 @@ class McpServer(
                         )
                         .put(
                             "instructions",
-                            "Droid-MCP exposes Android input and screenshot tools."
+                            "DroidIME exposes Android UI perception and input tools. Operate as an observe-plan-act-verify agent: inspect_ui and screenshot before acting; prefer find_and_tap for semantic targets; use coordinate gestures only when no matching UI node exists; after every state-changing action inspect the UI or screenshot to verify the expected result; do not claim success from an action response alone; if verification fails, re-observe and retry only when safe. wait_for_ui can wait for a visible text, content description, or resource ID. All input execution remains routed through ShizukuBridge."
                         )
                 )
             }
