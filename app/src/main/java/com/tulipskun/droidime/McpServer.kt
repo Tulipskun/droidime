@@ -300,6 +300,34 @@ class McpServer(
                     executor.inputText(args.getString("text"))
                 }
 
+                "inspect_ui" -> {
+                    val nodes = executor.inspectUi()
+                    toolText(nodes.toString())
+                }
+
+                "find_and_tap" -> {
+                    val match = executor.findAndTapUi(args.getString("query"))
+                    Thread.sleep(SCREENSHOT_DELAY_MILLIS)
+                    val png = executor.screenshot()
+                    JSONObject()
+                        .put("resultType", "complete")
+                        .put("content", JSONArray()
+                            .put(toolTextItem(match.toString()))
+                            .put(JSONObject()
+                                .put("type", "image")
+                                .put("data", Base64.encodeToString(png, Base64.NO_WRAP))
+                                .put("mimeType", "image/png")))
+                        .put("isError", false)
+                }
+
+                "wait_for_ui" -> {
+                    val result = executor.waitForUiText(
+                        args.getString("query"),
+                        args.optLong("timeout_ms", 10000L)
+                    )
+                    toolText(result.toString())
+                }
+
                 "screenshot" -> {
                     val png = executor.screenshot()
 
