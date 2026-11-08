@@ -40,6 +40,26 @@ class PointerOverlay(private val context: Context) {
         Log.d(TAG, "setEnabled($value)")
         if (!value) {
             main.post { detach() }
+        } else {
+            attach()
+        }
+    }
+
+    /**
+     * Adds the overlay window eagerly, so the cursor is visible as soon as the
+     * MCP server starts instead of only after the first successful action.
+     */
+    fun attach() {
+        if (!enabled) {
+            Log.d(TAG, "attach skipped: overlay disabled")
+            return
+        }
+        main.post {
+            val v = ensureWindow()
+            Log.d(
+                TAG,
+                "attach result: " + (if (v != null) "window ready" else "window failed")
+            )
         }
     }
 
@@ -174,6 +194,12 @@ class PointerOverlay(private val context: Context) {
             color = Color.WHITE
         }
 
+        private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 10f
+            color = Color.WHITE
+        }
+
         private val trail = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 8f
@@ -286,6 +312,11 @@ class PointerOverlay(private val context: Context) {
         private fun drawIdle(canvas: Canvas) {
             val x = lastX
             val y = lastY
+
+            halo.alpha = 230
+            canvas.drawCircle(x, y, 25f, halo)
+            halo.alpha = 150
+            canvas.drawCircle(x, y, 39f, halo)
 
             ring.alpha = 230
             canvas.drawCircle(x, y, 20f, ring)

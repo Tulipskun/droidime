@@ -1,15 +1,19 @@
 package com.tulipskun.droidime
 
 import android.content.ClipData
+import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Parcel
 import android.os.SystemClock
+import android.util.DisplayMetrics
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.WindowManager
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 import org.json.JSONArray
@@ -20,6 +24,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class ShizukuBridge(
+    private val context: Context,
     private val preferences: SharedPreferences,
     private val overlay: PointerOverlay? = null
 ) {
@@ -50,16 +55,45 @@ class ShizukuBridge(
 
     private fun ensureReady() {
         if (!Shizuku.pingBinder()) {
-            throw IllegalStateException("Shizuku is not running")
+            Log.e(TAG, "Shizuku binder not received in this process")
+            throw IllegalStateException(
+                "Shizuku is not running (binder not received in app process)"
+            )
         }
 
         if (
             Shizuku.checkSelfPermission() !=
                 PackageManager.PERMISSION_GRANTED
         ) {
+            Log.e(TAG, "Shizuku permission denied for this app")
             throw SecurityException(
                 "Droid-MCP is not authorized in Shizuku"
             )
+        }
+    }
+
+    /**
+     * Starts a privileged shell process through Shizuku. Reflection wraps any
+     * server-side failure in InvocationTargetException, whose message is null,
+     * which used to surface as the opaque "Tool execution failed". Unwrap it.
+     */
+    private fun newShizukuProcess(command: String): Process {
+        val method = Shizuku::class.java.getDeclaredMethod(
+            "newProcess",
+            Array<String>::class.java,
+            Array<String>::class.java,
+            String::class.java
+        )
+        method.isAccessible = true
+        return try {
+            method.invoke(
+                null,
+                arrayOf("sh", "-c", command),
+                null,
+                null
+            ) as Process
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw e.targetException ?: e
         }
     }
 
@@ -67,20 +101,7 @@ class ShizukuBridge(
         ensureReady()
 
         synchronized(lock) {
-            val process = Shizuku::class.java
-                .getDeclaredMethod(
-                    "newProcess",
-                    Array<String>::class.java,
-                    Array<String>::class.java,
-                    String::class.java
-                )
-                .apply { isAccessible = true }
-                .invoke(
-                    null,
-                    arrayOf("sh", "-c", command),
-                    null,
-                    null
-                ) as Process
+            val process = newShizukuProcess(command)
 
             val stdout = ByteArrayOutputStream()
             val stderr = ByteArrayOutputStream()
@@ -478,15 +499,44 @@ class ShizukuBridge(
         cachedScreenSize = null
     }
 
+    @Suppress("DEPRECATION")
     private fun screenSize(): ScreenSize {
         cachedScreenSize?.let { return it }
 
-        val output = runCommand("wm size").stdout.toString(StandardCharsets.UTF_8)
-        val match = Regex("[0-9]+x[0-9]+").findAll(output).lastOrNull()
-            ?: throw IllegalStateException("Unable to determine screen size")
-        val parts = match.value.split("x")
-        val size = ScreenSize(parts[0].toInt(), parts[1].toInt())
+        // Read the display locally. This needs no Shizuku call, so coordinate
+        // maths and the visible pointer keep working even when the privileged
+        // shell bridge is unavailable.
+        val local = try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE)
+                as? WindowManager
+            if (wm == null) {
+                null
+            } else if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val bounds = wm.currentWindowMetrics.bounds
+                ScreenSize(bounds.width(), bounds.height())
+            } else {
+                val metrics = DisplayMetrics()
+                wm.defaultDisplay.getRealMetrics(metrics)
+                ScreenSize(metrics.widthPixels, metrics.heightPixels)
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "local display metrics failed", error)
+            null
+        }
+
+        val size = if (local != null && local.width > 0 && local.height > 0) {
+            local
+        } else {
+            val output = runCommand("wm size").stdout
+                .toString(StandardCharsets.UTF_8)
+            val match = Regex("[0-9]+x[0-9]+").findAll(output).lastOrNull()
+                ?: throw IllegalStateException("Unable to determine screen size")
+            val parts = match.value.split("x")
+            ScreenSize(parts[0].toInt(), parts[1].toInt())
+        }
+
         cachedScreenSize = size
+        Log.d(TAG, "screenSize = " + size.width + "x" + size.height)
         return size
     }
 
@@ -890,6 +940,7 @@ class ShizukuBridge(
     )
 
     companion object {
+        private const val TAG = "DroidIME-Bridge"
         private const val MAX_SCREENSHOT_EDGE = 1500
         private const val TAP_HOLD_MILLIS = 40L
         private const val SWIPE_STEPS = 12

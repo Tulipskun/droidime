@@ -42,10 +42,12 @@ class McpService : Service() {
                 it.setEnabled(uiPreferences.getBoolean("pointer_overlay", true))
                 overlay = it
             }
+            // Create the overlay window now, not lazily on the first action.
+            pointerOverlay.attach()
 
             server = McpServer(
                 CloudflareTunnelConfig.LOCAL_PORT,
-                ShizukuBridge(preferences, pointerOverlay),
+                ShizukuBridge(this, preferences, pointerOverlay),
                 DeviceEndpoint.path(deviceName)
             )
             server!!.start()
@@ -61,6 +63,7 @@ class McpService : Service() {
         isRunning = false
         server?.stop()
         server = null
+        overlay?.setEnabled(false)
         overlay = null
         super.onDestroy()
     }

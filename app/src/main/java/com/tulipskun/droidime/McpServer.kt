@@ -1,6 +1,7 @@
 package com.tulipskun.droidime
 
 import android.util.Base64
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -438,9 +439,30 @@ class McpServer(
                     .put("isError", true)
             }
         } catch (e: Throwable) {
+            Log.e("DroidIME-MCP", "tool '" + name + "' failed", e)
+
+            // Report the whole exception chain, including wrapped reflection
+            // causes, so a failure is diagnosable instead of opaque.
+            val chain = StringBuilder()
+            var current: Throwable? = e
+            var depth = 0
+            while (current != null && depth < 5) {
+                if (depth > 0) chain.append(" <- ")
+                chain.append(current.javaClass.simpleName)
+                    .append(": ")
+                    .append(current.message ?: "(no message)")
+                current = current.cause
+                depth++
+            }
+
             JSONObject()
                 .put("resultType", "complete")
-                .put("content", JSONArray().put(toolTextItem(e.message ?: "Tool execution failed")))
+                .put(
+                    "content",
+                    JSONArray().put(
+                        toolTextItem("Tool execution failed: " + chain)
+                    )
+                )
                 .put("isError", true)
         }
     }
