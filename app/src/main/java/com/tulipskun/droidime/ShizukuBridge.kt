@@ -19,10 +19,18 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class ShizukuBridge(private val preferences: SharedPreferences) {
+class ShizukuBridge(
+    private val preferences: SharedPreferences,
+    private val overlay: PointerOverlay? = null
+) {
     private val lock = Any()
 
     fun preferences(): SharedPreferences = preferences
+
+    fun screenDimensions(): Pair<Int, Int> {
+        val size = screenSize()
+        return size.width to size.height
+    }
 
     fun checkConnection(): String {
         ensureReady()
@@ -160,8 +168,10 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
     fun tap(x: String, y: String) {
         val size = screenSize()
-        val px = percentToPixel(x, size.width)
-        val py = percentToPixel(y, size.height)
+        val px = toPixel(x, size.width)
+        val py = toPixel(y, size.height)
+
+        overlay?.showTap(px, py)
 
         // Direct binder injection: `input tap` costs a full shell process per tap.
         val downTime = SystemClock.uptimeMillis()
@@ -181,9 +191,9 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
     }
 
     /**
-     * Taps a list of percentage coordinates back to back in one call, with a fixed
-     * gap between taps. Mirrors ARTEMIS's click_sequence: the point is to collapse
-     * N deterministic taps into a single MCP round trip.
+     * Taps a list of pixel coordinates back to back in one call, with a fixed gap
+     * between taps. Mirrors ARTEMIS's click_sequence: the point is to collapse N
+     * deterministic taps into a single MCP round trip.
      */
     fun clickSequence(points: List<Pair<String, String>>, delayMs: Long): List<String> {
         require(points.isNotEmpty()) { "sequence must not be empty" }
@@ -194,7 +204,7 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
         points.forEachIndexed { index, (x, y) ->
             tap(x, y)
-            tapped.add("[" + x + ", " + y + "]")
+            tapped.add("[" + toPixel(x, size.width) + ", " + toPixel(y, size.height) + "]")
 
             if (index < points.size - 1 && delayMs > 0) {
                 Thread.sleep(delayMs)
@@ -207,8 +217,11 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
     fun longPress(x: String, y: String, durationMs: Long) {
         require(durationMs >= 200) { "duration_ms must be >= 200" }
         val size = screenSize()
-        val px = percentToPixel(x, size.width)
-        val py = percentToPixel(y, size.height)
+        val px = toPixel(x, size.width)
+        val py = toPixel(y, size.height)
+
+        overlay?.showLongPress(px, py, durationMs)
+
         val downTime = SystemClock.uptimeMillis()
         injectMotionEvent(createMotionEvent(downTime, MotionEvent.ACTION_DOWN, intArrayOf(0), arrayOf(intArrayOf(px, py))))
         try {
@@ -230,10 +243,12 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         }
 
         val size = screenSize()
-        val px1 = percentToPixel(x1, size.width)
-        val py1 = percentToPixel(y1, size.height)
-        val px2 = percentToPixel(x2, size.width)
-        val py2 = percentToPixel(y2, size.height)
+        val px1 = toPixel(x1, size.width)
+        val py1 = toPixel(y1, size.height)
+        val px2 = toPixel(x2, size.width)
+        val py2 = toPixel(y2, size.height)
+
+        overlay?.showSwipe(px1, py1, px2, py2)
 
         // Direct binder injection with interpolated MOVE events, so a swipe does
         // not wait on a shell process and keeps a smooth motion path.
@@ -276,43 +291,59 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         }
 
         val size = screenSize()
-        val command = StringBuilder()
+
+        val xs = IntArray(points.length())
+        val ys = IntArray(points.length())
+        val delays = LongArray(points.length())
 
         for (i in 0 until points.length()) {
             val point = points.getJSONObject(i)
-            val x = point.getString("x")
-            val y = point.getString("y")
-            val delay = point.getLong("delay_ms")
+            xs[i] = toPixel(point.getString("x"), size.width)
+            ys[i] = toPixel(point.getString("y"), size.height)
+            delays[i] = point.optLong("delay_ms", 0L)
 
-            require(delay >= 0) {
+            require(delays[i] >= 0) {
                 "delay_ms must be >= 0"
-            }
-
-            if (i == 0) {
-                command.append(
-                    "input motionevent DOWN " +
-                        percentToPixel(x, size.width) + " " + percentToPixel(y, size.height)
-                )
-            } else {
-                command.append(
-                    "; sleep " + delay / 1000.0
-                )
-                command.append(
-                    "; input motionevent MOVE " +
-                        percentToPixel(x, size.width) + " " + percentToPixel(y, size.height)
-                )
             }
         }
 
-        val last = points.getJSONObject(points.length() - 1)
+        overlay?.showSwipe(xs[0], ys[0], xs[points.length() - 1], ys[points.length() - 1])
 
-        command.append(
-            "; input motionevent UP " +
-                percentToPixel(last.getString("x"), size.width) + " " +
-                percentToPixel(last.getString("y"), size.height)
-        )
+        // Injected directly: the old version built an `input motionevent` shell
+        // pipeline, which cost a process spawn per point.
+        synchronized(lock) {
+            ensureReady()
 
-        runCommand(command.toString())
+            val downTime = SystemClock.uptimeMillis()
+            val pointerIds = intArrayOf(0)
+            val positions = arrayOf(intArrayOf(xs[0], ys[0]))
+
+            injectMotionEvent(
+                createMotionEvent(downTime, MotionEvent.ACTION_DOWN, pointerIds, positions)
+            )
+
+            try {
+                for (i in 1 until points.length()) {
+                    if (delays[i] > 0) {
+                        Thread.sleep(delays[i])
+                    }
+
+                    positions[0][0] = xs[i]
+                    positions[0][1] = ys[i]
+
+                    injectMotionEvent(
+                        createMotionEvent(downTime, MotionEvent.ACTION_MOVE, pointerIds, positions)
+                    )
+                }
+            } finally {
+                positions[0][0] = xs[points.length() - 1]
+                positions[0][1] = ys[points.length() - 1]
+
+                injectMotionEvent(
+                    createMotionEvent(downTime, MotionEvent.ACTION_UP, pointerIds, positions)
+                )
+            }
+        }
     }
 
     fun multiTouch(pointers: JSONArray) {
@@ -348,8 +379,8 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
             for (i in 0 until count) {
                 val point = pointArrays[i]!!.getJSONObject(0)
-                positions[i][0] = percentToPixel(point.getString("x"), size.width)
-                positions[i][1] = percentToPixel(point.getString("y"), size.height)
+                positions[i][0] = toPixel(point.getString("x"), size.width)
+                positions[i][1] = toPixel(point.getString("y"), size.height)
             }
 
             val downTime = SystemClock.uptimeMillis()
@@ -395,8 +426,8 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
                     }
 
                     delayMs = maxOf(delayMs, delay)
-                    positions[i][0] = percentToPixel(point.getString("x"), size.width)
-                    positions[i][1] = percentToPixel(point.getString("y"), size.height)
+                    positions[i][0] = toPixel(point.getString("x"), size.width)
+                    positions[i][1] = toPixel(point.getString("y"), size.height)
                 }
 
                 if (delayMs > 0) {
@@ -459,12 +490,33 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         return size
     }
 
-    private fun percentToPixel(value: String, size: Int): Int {
-        val match = Regex("^ *([0-9]+([.][0-9]+)?)% *$").matchEntire(value)
-            ?: throw IllegalArgumentException("Coordinate must be a percentage such as 50%")
-        val percent = match.groupValues[1].toDouble()
-        require(percent in 0.0..100.0) { "Coordinate percentage must be between 0% and 100%" }
-        return kotlin.math.round(size * percent / 100.0).toInt().coerceIn(0, size - 1)
+    /**
+     * Resolves a coordinate to a pixel offset.
+     *
+     * Pixels are the primary unit. A trailing "%" is still accepted so older
+     * callers keep working, but it is resolved against the current screen size
+     * and should not be used for new work.
+     */
+    private fun toPixel(value: String, size: Int): Int {
+        val trimmed = value.trim()
+
+        if (trimmed.endsWith("%")) {
+            val percent = trimmed.dropLast(1).trim().toDoubleOrNull()
+                ?: throw IllegalArgumentException(
+                    "Coordinate '" + value + "' is not a valid percentage"
+                )
+            require(percent in 0.0..100.0) {
+                "Coordinate percentage must be between 0% and 100%"
+            }
+            return kotlin.math.round(size * percent / 100.0).toInt().coerceIn(0, size - 1)
+        }
+
+        val pixel = trimmed.toDoubleOrNull()
+            ?: throw IllegalArgumentException(
+                "Coordinate '" + value + "' must be a pixel number, e.g. 540"
+            )
+        require(pixel >= 0.0) { "Coordinate must not be negative" }
+        return kotlin.math.round(pixel).toInt().coerceIn(0, size - 1)
     }
 
     private fun createMotionEvent(

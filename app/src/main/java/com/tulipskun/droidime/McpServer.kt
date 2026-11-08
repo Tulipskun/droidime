@@ -237,6 +237,10 @@ class McpServer(
                             "instructions",
                             "Droid-MCP drives a real Android device. Act and observe are " +
                                 "separate calls, so you decide when to look. " +
+                                "Coordinates are PIXELS, not percentages: x is the offset " +
+                                "from the left edge and y from the top edge. Call screen_size " +
+                                "once to learn the bounds, and read ui_hierarchy for exact " +
+                                "node bounds before tapping. " +
                                 "To act: tap, long_press, swipe, gesture, multi_touch, " +
                                 "key_event, input_text. To observe: ui_hierarchy (XML with " +
                                 "text, resource ids and pixel bounds, cheap) or screenshot (PNG). " +
@@ -246,7 +250,11 @@ class McpServer(
                                 "when you only need to know what is on screen. " +
                                 "act_and_observe runs one action, waits for the UI to settle " +
                                 "and returns a screenshot in a single call; use it only when you " +
-                                "need the screen immediately after acting."
+                                "need the screen immediately after acting. " +
+                                "A visible pointer is drawn on the device for every tap, hold and " +
+                                "swipe, so a person watching can see exactly where the agent acted."
+
+
                         )
                 )
             }
@@ -342,7 +350,7 @@ class McpServer(
                         require(entry.length() >= 2) {
                             "sequence entry $i must be [x, y]"
                         }
-                        points.add(entry.getString(0) to entry.getString(1))
+                        points.add(entry.getInt(0).toString() to entry.getInt(1).toString())
                     }
 
                     val tapped = executor.clickSequence(points, delayMs)
@@ -350,6 +358,20 @@ class McpServer(
                 }
 
                 // --- Observation only. ---
+                "screen_size" -> {
+                    val (width, height) = executor.screenDimensions()
+
+                    JSONObject()
+                        .put("resultType", "complete")
+                        .put(
+                            "content",
+                            JSONArray().put(
+                                toolTextItem("width=" + width + " height=" + height)
+                            )
+                        )
+                        .put("isError", false)
+                }
+
                 "ui_hierarchy" -> {
                     val xml = executor.uiHierarchy()
 

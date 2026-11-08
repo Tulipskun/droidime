@@ -6,21 +6,21 @@ import org.json.JSONObject
 object ToolCatalog {
     fun definitions(): JSONArray = JSONArray().apply {
         put(tool("tap", "Tap a screen coordinate using percentages of the current screen.", schema(
-            "x" to percentage("horizontal position, e.g. 50%"),
-            "y" to percentage("vertical position, e.g. 25%"),
+            "x" to pixel("horizontal pixel offset from the left edge, e.g. 540"),
+            "y" to pixel("vertical pixel offset from the top edge, e.g. 600"),
             required = listOf("x", "y")
         )))
         put(tool("long_press", "Hold a screen coordinate for a duration. Defaults to 3 seconds.", schema(
-            "x" to percentage("horizontal position, e.g. 50%"),
-            "y" to percentage("vertical position, e.g. 25%"),
+            "x" to pixel("horizontal pixel offset from the left edge, e.g. 540"),
+            "y" to pixel("vertical pixel offset from the top edge, e.g. 600"),
             "duration_ms" to integer("hold duration in milliseconds, default 3000, minimum 200"),
             required = listOf("x", "y")
         )))
         put(tool("swipe", "Swipe between percentage screen coordinates.", schema(
-            "x1" to percentage("start horizontal position, e.g. 10%"),
-            "y1" to percentage("start vertical position, e.g. 80%"),
-            "x2" to percentage("end horizontal position, e.g. 90%"),
-            "y2" to percentage("end vertical position, e.g. 20%"),
+            "x1" to pixel("start horizontal pixel offset, e.g. 108"),
+            "y1" to pixel("start vertical pixel offset, e.g. 1920"),
+            "x2" to pixel("end horizontal pixel offset, e.g. 972"),
+            "y2" to pixel("end vertical pixel offset, e.g. 480"),
             "duration_ms" to integer("duration in milliseconds"),
             required = listOf("x1", "y1", "x2", "y2", "duration_ms")
         )))
@@ -47,7 +47,7 @@ object ToolCatalog {
             "sequence" to JSONObject()
                 .put("type", "array")
                 .put("minItems", 1)
-                .put("description", "ordered list of [x, y] percentage pairs, e.g. [[50%, 25%], [50%, 60%]]")
+                .put("description", "ordered list of [x, y] pixel pairs, e.g. [[540, 600], [540, 1440]]")
                 .put(
                     "items",
                     JSONObject()
@@ -57,8 +57,8 @@ object ToolCatalog {
                         .put(
                             "items",
                             JSONObject()
-                                .put("type", "string")
-                                .put("pattern", "^ *([0-9]+([.][0-9]+)?)% *$")
+                                .put("type", "integer")
+                                .put("minimum", 0)
                         )
                 ),
             "delay_ms" to integer("gap between taps in milliseconds, default 50"),
@@ -72,6 +72,7 @@ object ToolCatalog {
             "include_image" to JSONObject().put("type", "boolean").put("description", "return a screenshot, default true"),
             required = listOf("action")
         )))
+        put(tool("screen_size", "Return the screen width and height in pixels. Call this once before choosing coordinates.", schema()))
         put(tool("ui_hierarchy", "Dump the accessibility hierarchy as XML: text, resource ids and pixel bounds for every visible node. Cheaper than a screenshot and precise enough to tap by bounds.", schema()))
     }
 
@@ -85,8 +86,8 @@ object ToolCatalog {
                     .put(
                         "properties",
                         JSONObject()
-                            .put("x", percentage("horizontal position, e.g. 50%"))
-                            .put("y", percentage("vertical position, e.g. 25%"))
+                            .put("x", pixel("horizontal pixel offset from the left edge, e.g. 540"))
+                            .put("y", pixel("vertical pixel offset from the top edge, e.g. 600"))
                             .put("delay_ms", integer("delay after point"))
                     )
                     .put("required", JSONArray(listOf("x", "y", "delay_ms")))
@@ -117,10 +118,10 @@ object ToolCatalog {
             .put("items", JSONObject().put("type", "integer"))
             .put("minItems", 1)
             .put("description", description)
-    private fun percentage(description: String): JSONObject =
+    private fun pixel(description: String): JSONObject =
         JSONObject()
-            .put("type", "string")
-            .put("pattern", "^ *([0-9]+([.][0-9]+)?)% *$")
+            .put("type", "integer")
+            .put("minimum", 0)
             .put("description", description)
 
     private fun schema(

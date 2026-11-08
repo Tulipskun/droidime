@@ -150,6 +150,15 @@ class MainActivity : Activity() {
         }
         remoteCard.addView(remoteMcpStatus)
         remoteCard.addView(actionButton("Connect / authorize Shizuku") { requestShizuku() })
+        remoteCard.addView(prefSwitch("Show pointer where the agent taps", "pointer_overlay", true))
+        remoteCard.addView(TextView(this).apply {
+            text = "The pointer needs the \"display over other apps\" permission. " +
+                "Without it every tool still works, the pointer is just invisible."
+            textSize = 12f
+            setTextColor(mutedColor)
+            setPadding(0, 0, 0, dp(6))
+        })
+        remoteCard.addView(actionButton("Allow display over other apps") { requestOverlayPermission() })
         remoteMcpToggle = actionButton("Start MCP Server") { toggleMcpServer() }
         remoteCard.addView(remoteMcpToggle)
         val deviceNameField = EditText(this).apply {
@@ -972,6 +981,33 @@ class MainActivity : Activity() {
 
     private fun sectionParams() = LinearLayout.LayoutParams(-1, -2).apply {
         bottomMargin = dp(13)
+    }
+
+    private fun requestOverlayPermission() {
+        if (android.os.Build.VERSION.SDK_INT < 23) return
+
+        if (android.provider.Settings.canDrawOverlays(this)) {
+            android.widget.Toast.makeText(
+                this,
+                "Already allowed",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        startActivity(
+            android.content.Intent(
+                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:" + packageName)
+            )
+        )
+    }
+
+    private fun roundedButton(label: String, onClick: () -> Unit) = android.widget.Button(this).apply {
+        text = label
+        textSize = 14f
+        isAllCaps = false
+        setOnClickListener { onClick() }
     }
 
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
