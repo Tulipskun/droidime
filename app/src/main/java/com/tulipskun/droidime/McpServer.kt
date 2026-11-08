@@ -235,7 +235,18 @@ class McpServer(
                         )
                         .put(
                             "instructions",
-                            "Droid-MCP exposes Android input and screenshot tools."
+                            "Droid-MCP drives a real Android device. Act and observe are " +
+                                "separate calls, so you decide when to look. " +
+                                "To act: tap, long_press, swipe, gesture, multi_touch, " +
+                                "key_event, input_text. To observe: ui_hierarchy (XML with " +
+                                "text, resource ids and pixel bounds, cheap) or screenshot (PNG). " +
+                                "For a deterministic multi-step path, send click_sequence with " +
+                                "all coordinates in one call instead of several tap calls: one " +
+                                "round trip beats several. Prefer ui_hierarchy over screenshots " +
+                                "when you only need to know what is on screen. " +
+                                "act_and_observe runs one action, waits for the UI to settle " +
+                                "and returns a screenshot in a single call; use it only when you " +
+                                "need the screen immediately after acting."
                         )
                 )
             }
@@ -269,15 +280,21 @@ class McpServer(
     private fun callTool(name: String, args: JSONObject): JSONObject {
         return try {
             when (name) {
-                "tap" -> toolWithScreenshot("tap completed") {
+                // --- Actuation only. No screenshot, no settle: the caller decides
+                // when to observe, exactly like ARTEMIS's act-then-observe split.
+                "tap" -> toolText("tap completed") {
                     executor.tap(args.getString("x"), args.getString("y"))
                 }
 
-                "long_press" -> toolWithScreenshot("long_press completed") {
-                    executor.longPress(args.getString("x"), args.getString("y"), args.optLong("duration_ms", DEFAULT_LONG_PRESS_DURATION_MILLIS))
+                "long_press" -> toolText("long_press completed") {
+                    executor.longPress(
+                        args.getString("x"),
+                        args.getString("y"),
+                        args.optLong("duration_ms", DEFAULT_LONG_PRESS_DURATION_MILLIS)
+                    )
                 }
 
-                "swipe" -> toolWithScreenshot("swipe completed") {
+                "swipe" -> toolText("swipe completed") {
                     executor.swipe(
                         args.getString("x1"),
                         args.getString("y1"),
@@ -287,15 +304,15 @@ class McpServer(
                     )
                 }
 
-                "gesture" -> toolWithScreenshot("gesture completed") {
+                "gesture" -> toolText("gesture completed") {
                     executor.gesture(args.getJSONArray("points"))
                 }
 
-                "multi_touch" -> toolWithScreenshot("multi_touch completed") {
+                "multi_touch" -> toolText("multi_touch completed") {
                     executor.multiTouch(args.getJSONArray("pointers"))
                 }
 
-                "key_event" -> toolWithScreenshot("key_event completed") {
+                "key_event" -> toolText("key_event completed") {
                     val keycodes = if (args.has("keycodes")) {
                         val array = args.getJSONArray("keycodes")
                         require(array.length() > 0) { "keycodes must not be empty" }
@@ -304,25 +321,41 @@ class McpServer(
                         intArrayOf(args.getInt("keycode"))
                     }
 
-                    executor.keyChord(
-                        keycodes,
-                        args.optLong("hold_ms", 0L)
-                    )
+                    executor.keyChord(keycodes, args.optLong("hold_ms", 0L))
                 }
 
-                "input_text" -> toolWithScreenshot("input_text completed") {
+                "input_text" -> toolText("input_text completed") {
                     executor.inputText(args.getString("text"))
                 }
 
+                // Atomic chained execution: N taps in one round trip. This is the
+                // tool ARTEMIS treats as structurally required, because it is what
+                // defeats turn latency on deterministic UI paths.
+                "click_sequence" -> {
+                    val sequence = args.getJSONArray("sequence")
+                    require(sequence.length() > 0) { "sequence must not be empty" }
+                    val delayMs = args.optLong("delay_ms", DEFAULT_SEQUENCE_DELAY_MILLIS)
+
+                    val points = ArrayList<Pair<String, String>>(sequence.length())
+                    for (i in 0 until sequence.length()) {
+                        val entry = sequence.getJSONArray(i)
+                        require(entry.length() >= 2) {
+                            "sequence entry $i must be [x, y]"
+                        }
+                        points.add(entry.getString(0) to entry.getString(1))
+                    }
+
+                    val tapped = executor.clickSequence(points, delayMs)
+                    toolText("Tapped in sequence at " + tapped.joinToString("; "))
+                }
+
+                // --- Observation only. ---
                 "ui_hierarchy" -> {
                     val xml = executor.uiHierarchy()
 
                     JSONObject()
                         .put("resultType", "complete")
-                        .put(
-                            "content",
-                            JSONArray().put(toolTextItem(xml))
-                        )
+                        .put("content", JSONArray().put(toolTextItem(xml)))
                         .put("isError", false)
                 }
 
@@ -336,61 +369,69 @@ class McpServer(
                             JSONArray().put(
                                 JSONObject()
                                     .put("type", "image")
-                                    .put(
-                                        "data",
-                                        Base64.encodeToString(png, Base64.NO_WRAP)
-                                    )
+                                    .put("data", Base64.encodeToString(png, Base64.NO_WRAP))
                                     .put("mimeType", "image/png")
                             )
                         )
                         .put("isError", false)
                 }
 
+                // --- Act then observe in one call, for callers that want the old
+                // behaviour. Opt-in, so the default path stays fast.
+                "act_and_observe" -> {
+                    val action = args.getJSONObject("action")
+                    val settleMs = args.optLong("settle_ms", DEFAULT_SETTLE_MILLIS)
+                    val includeImage = args.optBoolean("include_image", true)
+
+                    val actionResult = callTool(action.getString("name"), action)
+
+                    if (actionResult.optBoolean("isError", false)) {
+                        actionResult
+                    } else {
+                        Thread.sleep(settleMs.coerceAtLeast(0L))
+
+                        val content = JSONArray()
+                        content.put(toolTextItem("action completed, screen observed"))
+
+                        if (includeImage) {
+                            val png = executor.screenshot()
+                            content.put(
+                                JSONObject()
+                                    .put("type", "image")
+                                    .put("data", Base64.encodeToString(png, Base64.NO_WRAP))
+                                    .put("mimeType", "image/png")
+                            )
+                        }
+
+                        JSONObject()
+                            .put("resultType", "complete")
+                            .put("content", content)
+                            .put("isError", false)
+                    }
+                }
+
                 else -> JSONObject()
                     .put("resultType", "complete")
-                    .put(
-                        "content",
-                        JSONArray().put(toolTextItem("Unknown tool: $name"))
-                    )
+                    .put("content", JSONArray().put(toolTextItem("Unknown tool: $name")))
                     .put("isError", true)
             }
         } catch (e: Throwable) {
             JSONObject()
                 .put("resultType", "complete")
-                .put(
-                    "content",
-                    JSONArray().put(
-                        toolTextItem(e.message ?: "Tool execution failed")
-                    )
-                )
+                .put("content", JSONArray().put(toolTextItem(e.message ?: "Tool execution failed")))
                 .put("isError", true)
         }
     }
 
-    private fun toolWithScreenshot(
+    private fun toolText(
         text: String,
         action: () -> Unit
     ): JSONObject {
         action()
-        Thread.sleep(SCREENSHOT_DELAY_MILLIS)
-        val png = executor.screenshot()
 
         return JSONObject()
             .put("resultType", "complete")
-            .put(
-                "content",
-                JSONArray()
-                    .put(toolTextItem(text))
-                    .put(
-                        JSONObject()
-                            .put("type", "image")
-                            .put(
-                                "data",
-                                Base64.encodeToString(png, Base64.NO_WRAP)
-                            )
-                            .put("mimeType", "image/png")
-                    )
-            )
+            .put("content", JSONArray().put(toolTextItem(text)))
             .put("isError", false)
     }
 
@@ -544,9 +585,10 @@ class McpServer(
         )
         private const val UNSUPPORTED_PROTOCOL_VERSION = -32602
         private const val MAX_BODY = 1024 * 1024
-        // Settle time before the post-action screenshot. 1000ms dominated every
-        // action round trip; 250ms still covers the usual frame + animation start.
-        private const val SCREENSHOT_DELAY_MILLIS = 250L
+        // Only used by the opt-in act_and_observe tool. ARTEMIS settles 400ms
+        // before observing; plain actions no longer pay this at all.
+        private const val DEFAULT_SETTLE_MILLIS = 400L
+        private const val DEFAULT_SEQUENCE_DELAY_MILLIS = 50L
         private const val KEEP_ALIVE_TIMEOUT_MILLIS = 30_000
         private const val DEFAULT_LONG_PRESS_DURATION_MILLIS = 3000L
     }

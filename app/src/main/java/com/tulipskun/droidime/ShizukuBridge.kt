@@ -180,6 +180,30 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         }
     }
 
+    /**
+     * Taps a list of percentage coordinates back to back in one call, with a fixed
+     * gap between taps. Mirrors ARTEMIS's click_sequence: the point is to collapse
+     * N deterministic taps into a single MCP round trip.
+     */
+    fun clickSequence(points: List<Pair<String, String>>, delayMs: Long): List<String> {
+        require(points.isNotEmpty()) { "sequence must not be empty" }
+        require(delayMs >= 0) { "delay_ms must be >= 0" }
+
+        val size = screenSize()
+        val tapped = ArrayList<String>(points.size)
+
+        points.forEachIndexed { index, (x, y) ->
+            tap(x, y)
+            tapped.add("[" + x + ", " + y + "]")
+
+            if (index < points.size - 1 && delayMs > 0) {
+                Thread.sleep(delayMs)
+            }
+        }
+
+        return tapped
+    }
+
     fun longPress(x: String, y: String, durationMs: Long) {
         require(durationMs >= 200) { "duration_ms must be >= 200" }
         val size = screenSize()

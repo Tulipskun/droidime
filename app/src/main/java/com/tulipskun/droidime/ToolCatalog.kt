@@ -43,6 +43,35 @@ object ToolCatalog {
             required = listOf("text")
         )))
         put(tool("screenshot", "Capture the current screen as PNG.", schema()))
+        put(tool("click_sequence", "Tap several screen coordinates back to back in ONE call, with a fixed gap between taps. Use this for deterministic multi-tap paths (open menu, pick item, confirm) instead of separate tap calls, so the whole path costs one round trip.", schema(
+            "sequence" to JSONObject()
+                .put("type", "array")
+                .put("minItems", 1)
+                .put("description", "ordered list of [x, y] percentage pairs, e.g. [[50%, 25%], [50%, 60%]]")
+                .put(
+                    "items",
+                    JSONObject()
+                        .put("type", "array")
+                        .put("minItems", 2)
+                        .put("maxItems", 2)
+                        .put(
+                            "items",
+                            JSONObject()
+                                .put("type", "string")
+                                .put("pattern", "^ *([0-9]+([.][0-9]+)?)% *$")
+                        )
+                ),
+            "delay_ms" to integer("gap between taps in milliseconds, default 50"),
+            required = listOf("sequence")
+        )))
+        put(tool("act_and_observe", "Run one action, wait for the UI to settle, then return a screenshot. Use only when you need the screen right after acting; prefer a bare action plus a separate screenshot when you do not.", schema(
+            "action" to JSONObject()
+                .put("type", "object")
+                .put("description", "the action to run, e.g. {\"name\":\"tap\",\"x\":\"50%\",\"y\":\"25%\"}"),
+            "settle_ms" to integer("how long to wait before capturing, default 400"),
+            "include_image" to JSONObject().put("type", "boolean").put("description", "return a screenshot, default true"),
+            required = listOf("action")
+        )))
         put(tool("ui_hierarchy", "Dump the accessibility hierarchy as XML: text, resource ids and pixel bounds for every visible node. Cheaper than a screenshot and precise enough to tap by bounds.", schema()))
     }
 
