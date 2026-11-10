@@ -12,8 +12,6 @@ At the beginning of each session, the agent working in this project must install
 
 This file contains only project-specific rules. The central repository governs shared coordination; local rules below govern this project's technical workflow. In a conflict, explicit operator instructions take precedence, then project-specific technical constraints, then shared defaults.
 
-# AGENTS.md
-
 ## Workflow
 
 - Always push. Never leave committed work only in the local repository.
