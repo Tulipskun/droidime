@@ -78,5 +78,6 @@ Agents must bootstrap and follow Tulipskun/Agents themselves. Do not install or 
 - The cloud sandbox has no Android SDK. Kotlin changes must be compile-checked using the Android build environment or GitHub Android Release workflow; do not claim a cloud-only source edit is compiled.
 - Local render/build command when the configured toolchain is available: `/opt/gradle/gradle-8.9/bin/gradle --no-daemon testDebugUnitTest`.
 - KeyboardRenderTest renders each keyboard state to app/build/render/<state>.png and asserts the frame is not blank. Add a state for any new page or panel.
+- Private state is set in tests with setField, which walks the superclass chain; the service's fields are on the outer class, not the nested view.
 - A layout that produces zero cells renders as one flat colour; if a new render is a single colour, check that cells are assigned.
 - Update this section only for durable project-specific workflow rules, not task history.
