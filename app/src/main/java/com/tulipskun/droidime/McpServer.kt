@@ -236,26 +236,25 @@ class McpServer(
                         )
                         .put(
                             "instructions",
-                            "Droid-MCP drives a real Android device. Act and observe are " +
-                                "separate calls, so you decide when to look. " +
-                                "Coordinates are PIXELS, not percentages: x is the offset " +
-                                "from the left edge and y from the top edge. Call screen_size " +
-                                "once to learn the bounds, and read ui_hierarchy for exact " +
-                                "node bounds before tapping. " +
-                                "To act: tap, long_press, swipe, gesture, multi_touch, " +
-                                "key_event, input_text. To observe: ui_hierarchy (XML with " +
-                                "text, resource ids and pixel bounds, cheap) or screenshot (PNG). " +
-                                "For a deterministic multi-step path, send click_sequence with " +
-                                "all coordinates in one call instead of several tap calls: one " +
-                                "round trip beats several. Prefer ui_hierarchy over screenshots " +
-                                "when you only need to know what is on screen. " +
-                                "act_and_observe runs one action, waits for the UI to settle " +
-                                "and returns a screenshot in a single call; use it only when you " +
-                                "need the screen immediately after acting. " +
-                                "A visible pointer is drawn on the device for every tap, hold and " +
-                                "swipe, so a person watching can see exactly where the agent acted."
-
-
+                            "Droid-MCP drives a real Android device and follows observe-plan-act-verify. " +
+                                "Coordinates are PIXELS, not percentages: x is the offset from the left edge " +
+                                "and y from the top edge. Call screen_size once to learn the bounds, and read " +
+                                "ui_hierarchy for exact node bounds before coordinate taps. " +
+                                "To observe: inspect_ui (structured JSON with text, content descriptions, " +
+                                "resource IDs, bounds and clickability), ui_hierarchy (XML, cheap), or screenshot (PNG). " +
+                                "Prefer find_and_tap for semantic targets; use coordinate gestures only when no " +
+                                "matching UI node exists. To act: tap, long_press, swipe, gesture, multi_touch, " +
+                                "key_event, input_text, click_sequence. After every state-changing action, observe " +
+                                "again with inspect_ui, ui_hierarchy, or screenshot to verify the expected result; " +
+                                "do not claim success from an action response alone. If verification fails, " +
+                                "re-observe and retry only when safe. wait_for_ui can wait for a visible text, " +
+                                "content description, or resource ID. For a deterministic multi-step path, send " +
+                                "click_sequence with all coordinates in one call instead of several tap calls. " +
+                                "act_and_observe runs one action, waits for the UI to settle and returns a screenshot " +
+                                "in a single call; use it only when you need the screen immediately after acting. " +
+                                "A visible pointer is drawn on the device for every tap, hold and swipe, so a " +
+                                "person watching can see exactly where the agent acted. All input execution " +
+                                "remains routed through ShizukuBridge."
                         )
                 )
             }
@@ -335,6 +334,27 @@ class McpServer(
 
                 "input_text" -> toolText("input_text completed") {
                     executor.inputText(args.getString("text"))
+                }
+
+                "inspect_ui" -> {
+                    val nodes = executor.inspectUi()
+
+                    toolText(nodes.toString())
+                }
+
+                "find_and_tap" -> {
+                    val match = executor.findAndTapUi(args.getString("query"))
+
+                    toolText("find_and_tap completed: " + match)
+                }
+
+                "wait_for_ui" -> {
+                    val match = executor.waitForUiText(
+                        args.getString("query"),
+                        args.optLong("timeout_ms", DEFAULT_WAIT_FOR_UI_TIMEOUT_MILLIS)
+                    )
+
+                    toolText(match.toString())
                 }
 
                 // Atomic chained execution: N taps in one round trip. This is the
@@ -633,6 +653,7 @@ class McpServer(
         // before observing; plain actions no longer pay this at all.
         private const val DEFAULT_SETTLE_MILLIS = 400L
         private const val DEFAULT_SEQUENCE_DELAY_MILLIS = 50L
+        private const val DEFAULT_WAIT_FOR_UI_TIMEOUT_MILLIS = 10_000L
         private const val KEEP_ALIVE_TIMEOUT_MILLIS = 30_000
         private const val DEFAULT_LONG_PRESS_DURATION_MILLIS = 3000L
     }
