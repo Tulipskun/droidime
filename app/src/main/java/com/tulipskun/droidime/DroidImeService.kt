@@ -272,7 +272,7 @@ class DroidImeService : InputMethodService() {
 
     // Learned "previous word -> next word" counts from text the user actually commits. Stored with
     // the same settings as userWords so predictions survive a restart without a corpus dependency.
-    private val wordTransitions = HashMap<String, LinkedHashMap<String, Int>>()
+    private val wordTransitions = linkedMapOf<String, LinkedHashMap<String, Int>>()
 
     // ---- Clipboard -----------------------------------------------------------------------------
     //
@@ -319,6 +319,8 @@ class DroidImeService : InputMethodService() {
     private var deleteHold: Runnable? = null
     private var deleteGeneration = 0L
     private var deleteSpeedMs = DELETE_START_MS
+    private var deleteStartX = 0f
+    private var deleteSwipeHandled = false
     private var spaceDragStartX = 0f
     private var spaceDragStartCursor = -1
     private var spaceDragLastCursor = -1
@@ -722,8 +724,8 @@ class DroidImeService : InputMethodService() {
         val after = connection.getTextAfterCursor(1, 0)
         if (!after.isNullOrEmpty() && after[0].isLetterOrDigit()) return emptyList()
         val before = connection.getTextBeforeCursor(24, 0)?.toString() ?: return emptyList()
-        if (before.isEmpty()) return emptyList()
-        return if (isThai(before.last())) thaiSuggestions(before) else englishSuggestions(before)
+        val lastWordChar = before.lastOrNull { it.isLetterOrDigit() } ?: return emptyList()
+        return if (isThai(lastWordChar)) thaiSuggestions(before) else englishSuggestions(before)
     }
 
     private fun englishSuggestions(before: String): List<Suggestion> {
@@ -738,31 +740,53 @@ class DroidImeService : InputMethodService() {
             userWords,
             EDIT_PENALTY
         )
-        if (found.isEmpty()) return emptyList()
+        val lowerTyped = typed.lowercase()
+        val typedKnown = (dictEn?.indexOf(lowerTyped) ?: -1) >= 0 || userWords.containsKey(lowerTyped)
         val allCaps = typed.length > 1 && typed.all { it.isUpperCase() }
         val capital = typed.firstOrNull()?.isUpperCase() == true
-        val out = ArrayList<Suggestion>()
-        // The word as typed stays available as the first choice, like Gboard.
-        if (typed.length >= 2) out.add(Suggestion(typed, typed.length, " "))
-        for (word in found) {
-            val shown = when {
-                allCaps -> word.uppercase()
-                capital -> word.replaceFirstChar { it.uppercase() }
-                else -> word
-            }
-            out.add(Suggestion(shown, typed.length, " "))
+        fun shown(word: String) = when {
+            allCaps -> word.uppercase()
+            capital -> word.replaceFirstChar { it.uppercase() }
+            else -> word
         }
-        return out
+        val out = ArrayList<Suggestion>()
+        // A correctly typed word stays first; a likely correction outranks a typo,
+        // while the literal text remains available like Gboard.
+        if (typed.length >= 2 && (typedKnown || found.isEmpty())) {
+            out.add(Suggestion(typed, typed.length, " "))
+        }
+        for (word in found) out.add(Suggestion(shown(word), typed.length, " "))
+        if (typed.length >= 2 && !typedKnown && found.isNotEmpty()) {
+            out.add(Suggestion(typed, typed.length, " "))
+        }
+        return out.take(3)
     }
 
     // Thai has no spaces, so try the longest trailing run of letters first and fall back to
     // shorter endings (down to a single consonant, so suggestions start with the first
-    // character typed). The word as typed takes the first slot, like Gboard.
+    // character typed). A separator asks for the learned next word instead.
     private fun thaiSuggestions(before: String): List<Suggestion> {
         val dict = dictTh
+        val context = NextWordModel.context(before)
+        val learned = NextWordModel.learnedNextWords(context.previous, wordTransitions, 3).toSet()
         var start = before.length
         while (start > 0 && isThai(before[start - 1]) && before.length - start < 24) start--
         val run = before.substring(start)
+
+        if (run.isEmpty()) {
+            val out = ArrayList<Suggestion>()
+            for (word in learned.take(3)) out.add(Suggestion(word, 0, "", 1_000_000))
+            if (dict != null && out.size < 3) {
+                val exclude = HashSet<String>(learned)
+                context.previous?.let { exclude.add(it) }
+                for (index in dict.frequentCandidates(3 - out.size, exclude, "")) {
+                    val word = dict.words[index]
+                    if (out.none { it.text == word }) out.add(Suggestion(word, 0, "", dict.freqs[index]))
+                }
+            }
+            return out.take(3)
+        }
+
         // Completions are ranked by frequency, with a small bonus for the word as typed and for
         // words the user has already used, so the strip's order is stable as more is typed.
         val completions = ArrayList<Suggestion>()
@@ -978,10 +1002,12 @@ class DroidImeService : InputMethodService() {
         }
         if (thai) {
             finishThaiComposition()
+            val context = connection.getTextBeforeCursor(64, 0)?.toString()?.let { NextWordModel.context(it) }
             // Thai has no spaces: the word goes in as is, and the runners-up replace it.
             val word = words[0]
             connection.commitText(word, 1)
             learnWord(word)
+            learnWordTransition(context?.previous, word)
             glideCommitted = word
             glideAlternatives = words.map { Suggestion(it, word.length, "") }
             lastSpaceTap = 0L
@@ -1100,7 +1126,11 @@ class DroidImeService : InputMethodService() {
             var s = before.length
             while (s > 0 && isThai(before[s - 1])) s--
             val run = before.substring(s)
-            if (run.length >= 2) learnWord(run)
+            if (run.length >= 2) {
+                val context = NextWordModel.context(before)
+                learnWord(run)
+                learnWordTransition(context.previous, run)
+            }
         } else {
             var s = before.length
             while (s > 0 && NextWordModel.isEnglishWordChar(before[s - 1])) s--
@@ -1412,18 +1442,6 @@ class DroidImeService : InputMethodService() {
         thaiComposingText = ""
     }
 
-    private fun restoreThaiComposition() {
-        val connection = currentInputConnection ?: return
-        val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
-        var start = before.length
-        while (start > 0 && isThai(before[start - 1])) start--
-        val trailing = before.substring(start)
-        if (trailing.isNotEmpty()) {
-            connection.setComposingText(trailing, 1)
-            thaiComposingText = trailing
-        }
-    }
-
     private fun typeText(value: String) {
         val connection = currentInputConnection
         if (connection != null) {
@@ -1551,6 +1569,26 @@ class DroidImeService : InputMethodService() {
         typeText(" ")
     }
 
+    private fun deleteWord() {
+        val connection = currentInputConnection ?: return
+        finishThaiComposition()
+        thaiComposingText = ""
+        glideCommitted = null
+        glideAlternatives = emptyList()
+        val selection = connection.getSelectedText(0)
+        if (!selection.isNullOrEmpty()) {
+            connection.commitText("", 1)
+            afterTextChanged()
+            return
+        }
+        val before = connection.getTextBeforeCursor(512, 0)?.toString().orEmpty()
+        val start = TextDeletion.previousWordStart(before)
+        if (start < before.length) {
+            connection.deleteSurroundingText(before.length - start, 0)
+            afterTextChanged()
+        }
+    }
+
     private fun deleteOne(updateShift: Boolean = true) {
         val connection = currentInputConnection ?: return
         markLastTouchCorrected()
@@ -1559,7 +1597,7 @@ class DroidImeService : InputMethodService() {
         if (composing.isNotEmpty() &&
             connection.getTextBeforeCursor(composing.length, 0)?.toString() == composing
         ) {
-            val start = composing.offsetByCodePoints(composing.length, -1)
+            val start = TextDeletion.previousClusterStart(composing)
             val remaining = composing.substring(0, start)
             if (remaining.isEmpty()) connection.commitText("", 1)
             else connection.setComposingText(remaining, 1)
@@ -1584,14 +1622,13 @@ class DroidImeService : InputMethodService() {
         val selection = connection.getSelectedText(0)
         if (!selection.isNullOrEmpty()) {
             connection.commitText("", 1)
-        } else if (Build.VERSION.SDK_INT >= 24) {
-            if (!connection.deleteSurroundingTextInCodePoints(1, 0)) {
-                connection.deleteSurroundingText(1, 0)
-            }
         } else {
-            connection.deleteSurroundingText(1, 0)
+            val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+            val start = TextDeletion.previousClusterStart(before)
+            if (start < before.length) {
+                connection.deleteSurroundingText(before.length - start, 0)
+            }
         }
-        restoreThaiComposition()
         if (updateShift) afterTextChanged()
     }
 
@@ -2909,6 +2946,8 @@ class DroidImeService : InputMethodService() {
                     pressed = cell
                     longPressFired = false
                     spaceDragMoved = false
+                    deleteStartX = event.x
+                    deleteSwipeHandled = false
                     if (cell?.style == KeyStyle.SPACE && !panelOpen()) {
                         val extracted = currentInputConnection?.getExtractedText(ExtractedTextRequest(), 0)
                         if (extracted != null && extracted.selectionStart >= 0) {
@@ -3000,9 +3039,17 @@ class DroidImeService : InputMethodService() {
                             return true
                         }
                     }
-                    // Once Delete is pressed, keep the repeat gesture captured until
-                    // ACTION_UP or ACTION_CANCEL. Small pointer drift must not cancel deletion.
-                    if (pressed?.isDelete == true) return true
+                    // Delete captures the pointer; a left swipe switches from character repeat
+                    // to Gboard's whole-word delete.
+                    if (pressed?.isDelete == true) {
+                        if (!deleteSwipeHandled && event.x - deleteStartX < -dpf(DELETE_SWIPE_DP)) {
+                            deleteSwipeHandled = true
+                            stopDeleteRepeat()
+                            deleteWord()
+                            invalidate()
+                        }
+                        return true
+                    }
                     val cell = cellAt(event.x, event.y)
                     if (cell !== pressed) {
                         pressed = cell
@@ -3081,6 +3128,7 @@ class DroidImeService : InputMethodService() {
                     glideStartCell = null
                     spaceDragStartCursor = -1
                     spaceDragMoved = false
+                    deleteSwipeHandled = false
                     glideX.clear()
                     glideY.clear()
                     cancelPendingLongPress()
@@ -3309,5 +3357,6 @@ class DroidImeService : InputMethodService() {
         private const val DELETE_START_MS = 60
         private const val DELETE_ACCEL_STEP = 3
         private const val DELETE_MIN_MS = 15
+        private const val DELETE_SWIPE_DP = 40f
     }
 }

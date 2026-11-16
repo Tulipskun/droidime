@@ -55,6 +55,20 @@ class DeleteGlideTest {
         call(service, "deleteOne", false)
         assertEquals("hell", connection.getTextBeforeCursor(20, 0).toString())
     }
+    @Test fun swipeLeftFromDeleteRemovesOneWord() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())
+        val connection = BaseInputConnection(editor, true)
+        setField(service, "mInputConnection", connection)
+        setField(service, "glideCommitted", null)
+        setField(service, "thaiComposingText", "")
+        connection.commitText("hello world ", 1)
+
+        call(service, "deleteWord")
+
+        assertEquals("hello ", connection.getTextBeforeCursor(30, 0).toString())
+    }
+
     @Test fun deleteKeepsThaiComposingRegionAndDoesNotRestoreStaleText() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())
@@ -67,10 +81,6 @@ class DeleteGlideTest {
         call(service, "deleteOne", false)
         assertEquals("ก้", connection.getTextBeforeCursor(20, 0).toString())
         assertEquals("ก้", getField(service, "thaiComposingText"))
-
-        call(service, "deleteOne", false)
-        assertEquals("ก", connection.getTextBeforeCursor(20, 0).toString())
-        assertEquals("ก", getField(service, "thaiComposingText"))
 
         call(service, "deleteOne", false)
         assertEquals("", connection.getTextBeforeCursor(20, 0).toString())

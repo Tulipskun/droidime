@@ -19,18 +19,22 @@ internal data class WordContext(val previous: String?, val typed: String)
 internal object NextWordModel {
     fun isEnglishWordChar(c: Char): Boolean = c in 'a'..'z' || c in 'A'..'Z' || c == '\''
 
+    private fun isThaiWordChar(c: Char): Boolean = c in '\u0E01'..'\u0E5B'
+
+    fun isWordChar(c: Char): Boolean = isEnglishWordChar(c) || isThaiWordChar(c) || c.isDigit()
+
     fun context(before: String): WordContext {
         var wordEnd = before.length
-        while (wordEnd > 0 && !isEnglishWordChar(before[wordEnd - 1])) wordEnd--
+        while (wordEnd > 0 && !isWordChar(before[wordEnd - 1])) wordEnd--
         var wordStart = wordEnd
-        while (wordStart > 0 && isEnglishWordChar(before[wordStart - 1])) wordStart--
-        val endsWithWord = before.isNotEmpty() && isEnglishWordChar(before.last())
+        while (wordStart > 0 && isWordChar(before[wordStart - 1])) wordStart--
+        val endsWithWord = before.isNotEmpty() && isWordChar(before.last())
         val typed = if (endsWithWord) before.substring(wordStart, wordEnd) else ""
         val boundary = if (endsWithWord) wordStart else wordEnd
         var prevEnd = boundary
-        while (prevEnd > 0 && !isEnglishWordChar(before[prevEnd - 1])) prevEnd--
+        while (prevEnd > 0 && !isWordChar(before[prevEnd - 1])) prevEnd--
         var prevStart = prevEnd
-        while (prevStart > 0 && isEnglishWordChar(before[prevStart - 1])) prevStart--
+        while (prevStart > 0 && isWordChar(before[prevStart - 1])) prevStart--
         val previous = if (prevStart < prevEnd) before.substring(prevStart, prevEnd).lowercase() else null
         return WordContext(previous, typed)
     }
@@ -38,7 +42,21 @@ internal object NextWordModel {
     fun normalize(value: String): String? {
         val word = value.trim().lowercase()
         if (word.length !in 2..30) return null
-        return word.takeIf { it.all { c -> c in 'a'..'z' || c == '\'' } }
+        return word.takeIf { it.all { c -> c in 'a'..'z' || c == '\'' || c in '\u0E01'..'\u0E5B' } }
+    }
+
+    // Most frequent continuations after a committed word, used by the Thai strip where there is
+    // no partial Latin token to prefix-match.
+    fun learnedNextWords(
+        previous: String?,
+        transitions: Map<String, LinkedHashMap<String, Int>>,
+        limit: Int = 3
+    ): List<String> {
+        val key = normalize(previous ?: return emptyList()) ?: return emptyList()
+        return transitions[key].orEmpty().entries
+            .sortedByDescending { it.value }
+            .take(limit)
+            .map { it.key }
     }
 
     // Adds one observed continuation and prunes the least frequent entries when the model grows.
