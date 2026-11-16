@@ -79,7 +79,10 @@ class DroidImeService : InputMethodService() {
     )
 
     // Words sorted for binary-search prefix lookup, with a frequency per word.
-    private class Dictionary(val words: Array<String>, val freqs: IntArray) {
+    private class Dictionary(
+        override val words: Array<String>,
+        override val freqs: IntArray
+    ) : NextWordDictionary {
         // Maps a word with all Thai vowel/tone marks removed to the index of the most frequent
         // wording that builds it. Thai typing often drops marks, so "สวสด" is found by looking up
         // the mark-free key of "สวัสดี".
@@ -87,7 +90,8 @@ class DroidImeService : InputMethodService() {
         private val prefixIndex: HashMap<String, IntArray>
         private val glideIndex: HashMap<Int, IntArray>
         val strippedWords: Array<String>
-        val maxFrequency: Int
+        override val maxFrequency: Int
+        private val frequentIndices: IntArray
 
         init {
             val index = HashMap<String, Int>()
@@ -129,6 +133,23 @@ class DroidImeService : InputMethodService() {
             glideIndex = HashMap(glideBuckets.size)
             for ((key, indices) in glideBuckets) glideIndex[key] = indices.toIntArray()
             maxFrequency = freqs.maxOrNull() ?: 1
+            frequentIndices = words.indices
+                .sortedWith(compareByDescending<Int> { freqs[it] }.thenBy { it })
+                .toIntArray()
+        }
+
+        // Most frequent dictionary words, used when there is no word under the cursor yet (for
+        // example right after a space) so the strip can still offer a useful next word.
+        override fun frequentCandidates(limit: Int, exclude: Set<String>, prefix: String): List<Int> {
+            if (limit <= 0) return emptyList()
+            val found = ArrayList<Int>(limit)
+            for (index in frequentIndices) {
+                val word = words[index]
+                if (word in exclude || !word.startsWith(prefix)) continue
+                found.add(index)
+                if (found.size == limit) break
+            }
+            return found
         }
 
         fun glideCandidates(firstKeys: Set<Char>, lastKeys: Set<Char>): IntArray {
@@ -150,14 +171,14 @@ class DroidImeService : InputMethodService() {
             return lo
         }
 
-        fun indexOf(word: String): Int {
+        override fun indexOf(word: String): Int {
             val i = lowerBound(word)
             return if (i < words.size && words[i] == word) i else -1
         }
 
         // Dictionary words one edit away from `word` (a letter dropped, swapped, replaced or added),
         // which is how "teh" offers "the".
-        fun corrections(word: String): List<Int> {
+        override fun corrections(word: String): List<Int> {
             val found = LinkedHashSet<Int>()
             fun probe(candidate: String) {
                 if (candidate == word) return
@@ -178,7 +199,7 @@ class DroidImeService : InputMethodService() {
         }
 
         // Indices of the `limit` most frequent words that start with `prefix` and are longer.
-        fun complete(prefix: String, limit: Int): List<Int> {
+        override fun complete(prefix: String, limit: Int): List<Int> {
             if (limit <= 0) return emptyList()
             if (prefix.length <= 4) return prefixIndex[prefix]?.take(limit) ?: emptyList()
             val best = ArrayList<Int>()
@@ -248,6 +269,10 @@ class DroidImeService : InputMethodService() {
     // suggestions and glide matching. Growth is deliberate (an explicit word beats a wrong one), so
     // a single disposition check is enough; this stays on the main thread for simplicity.
     private val userWords = linkedMapOf<String, Int>()
+
+    // Learned "previous word -> next word" counts from text the user actually commits. Stored with
+    // the same settings as userWords so predictions survive a restart without a corpus dependency.
+    private val wordTransitions = HashMap<String, LinkedHashMap<String, Int>>()
 
     // ---- Clipboard -----------------------------------------------------------------------------
     //
@@ -372,6 +397,7 @@ class DroidImeService : InputMethodService() {
         super.onCreate()
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
         loadUserWords()
+        loadWordTransitions()
         loadClips()
         loadRecentEmojis()
         Thread {
@@ -701,52 +727,20 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun englishSuggestions(before: String): List<Suggestion> {
-        val dict = dictEn
-        var start = before.length
-        while (start > 0 && (before[start - 1] in 'a'..'z' || before[start - 1] in 'A'..'Z' || before[start - 1] == '\'')) start--
-        val typed = before.substring(start)
-        if (typed.isEmpty() || typed.length > 20) return emptyList()
-        val lower = typed.lowercase()
-        // Completions and one-edit corrections compete on frequency, like Gboard's strip where
-        // "test" offers both "rest" and "tested" next to the word as typed. Words from the shipped
-        // dictionary and the user's own vocabulary are scored together by word.
-        val scores = LinkedHashMap<String, Int>()
-        if (dict != null) {
-            for (index in dict.complete(lower, 8)) {
-                val word = dict.words[index]
-                val score = dict.freqs[index] - (word.length - lower.length)
-                val old = scores[word]
-                if (old == null || score > old) scores[word] = score
-            }
-            if (lower.length >= 3) {
-                for (index in dict.corrections(lower)) {
-                    val word = dict.words[index]
-                    val score = dict.freqs[index] - EDIT_PENALTY
-                    val old = scores[word]
-                    if (old == null || score > old) scores[word] = score
-                }
-            }
-        }
-        // Personal dictionary: prefix completions and one-edit corrections, scored by how often the
-        // user has typed them (a practice the base frequencies can't see).
-        for ((word, count) in userWords) {
-            if (word == lower) continue
-            if (word.length > lower.length && word.startsWith(lower)) {
-                val score = count * 3 - (word.length - lower.length)
-                val old = scores[word]
-                if (old == null || score > old) scores[word] = score
-            } else if (lower.length >= 3 && oneEdit(word, lower)) {
-                val score = count * 3 - EDIT_PENALTY
-                val old = scores[word]
-                if (old == null || score > old) scores[word] = score
-            }
-        }
-        if (scores.isEmpty()) return emptyList()
-        val take = if (typed.length >= 2) 2 else 3
-        val found = scores.entries.sortedByDescending { entry -> entry.value }
-            .take(take).map { entry -> entry.key }
+        val context = NextWordModel.context(before)
+        val typed = context.typed
+        if (typed.length > 20) return emptyList()
+        val found = NextWordModel.rankedWords(
+            typed,
+            context.previous,
+            dictEn,
+            wordTransitions,
+            userWords,
+            EDIT_PENALTY
+        )
+        if (found.isEmpty()) return emptyList()
         val allCaps = typed.length > 1 && typed.all { it.isUpperCase() }
-        val capital = typed[0].isUpperCase()
+        val capital = typed.firstOrNull()?.isUpperCase() == true
         val out = ArrayList<Suggestion>()
         // The word as typed stays available as the first choice, like Gboard.
         if (typed.length >= 2) out.add(Suggestion(typed, typed.length, " "))
@@ -809,7 +803,7 @@ class DroidImeService : InputMethodService() {
             for ((word, _) in userWords) {
                 if (word == run) continue
                 val w = word.filterNot { it in THAI_MARKS }
-                if (w == stripped || oneEdit(w, stripped)) {
+                if (w == stripped || NextWordModel.oneEdit(w, stripped)) {
                     if (fixes.none { s -> s.text == word }) fixes.add(Suggestion(word, run.length, ""))
                 }
             }
@@ -995,11 +989,13 @@ class DroidImeService : InputMethodService() {
             return
         }
         val shown = words.map { styled(it) }
+        val context = connection.getTextBeforeCursor(64, 0)?.toString()?.let { NextWordModel.context(it) }
         val previous = connection.getTextBeforeCursor(1, 0)?.toString()
         val lead = if (!previous.isNullOrEmpty() && (previous[0].isLetterOrDigit() || previous[0] in ".,!?;:")) " " else ""
         val committed = shown[0] + " "
         connection.commitText(lead + committed, 1)
         learnWord(shown[0])
+        learnWordTransition(context?.previous, shown[0])
         glideCommitted = committed
         glideAlternatives = shown.map { Suggestion(it, committed.length, " ") }
         lastSpaceTap = 0L
@@ -1008,6 +1004,7 @@ class DroidImeService : InputMethodService() {
 
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
+        val context = connection.getTextBeforeCursor(64, 0)?.toString()?.let { NextWordModel.context(it) }
         finishThaiComposition()
         if (glideCommitted != null) {
             preferences.edit().putInt(GLIDE_ALTERNATIVES, preferences.getInt(GLIDE_ALTERNATIVES, 0) + 1).apply()
@@ -1020,6 +1017,7 @@ class DroidImeService : InputMethodService() {
         // Picking a suggestion confirms the word, so it joins the personal dictionary too, and the
         // strip keeps offering it until the text changes.
         learnWord(suggestion.text)
+        learnWordTransition(context?.previous, suggestion.text)
         lastSpaceTap = 0L
         afterTextChanged()
     }
@@ -1050,6 +1048,37 @@ class DroidImeService : InputMethodService() {
         preferences.edit().putString(USER_DICT, sb.toString()).apply()
     }
 
+    private fun loadWordTransitions() {
+        wordTransitions.clear()
+        val raw = preferences.getString(NEXT_WORD_DICT, null) ?: return
+        for (line in raw.lines()) {
+            val parts = line.split('\t')
+            if (parts.size != 3) continue
+            val previous = NextWordModel.normalize(parts[0]) ?: continue
+            val next = NextWordModel.normalize(parts[1]) ?: continue
+            val count = parts[2].toIntOrNull()?.takeIf { it > 0 } ?: continue
+            wordTransitions.getOrPut(previous) { LinkedHashMap() }[next] = count
+        }
+    }
+
+    private fun saveWordTransitions() {
+        val sb = StringBuilder()
+        for ((previous, nexts) in wordTransitions) {
+            for ((next, count) in nexts) {
+                if (sb.isNotEmpty()) sb.append('\n')
+                sb.append(previous).append('\t').append(next).append('\t').append(count)
+            }
+        }
+        preferences.edit().putString(NEXT_WORD_DICT, sb.toString()).apply()
+    }
+
+    private fun learnWordTransition(previous: String?, next: String) {
+        val changed = NextWordModel.recordTransition(
+            wordTransitions, previous, next, NEXT_WORDS_PER_PREVIOUS, NEXT_WORD_PREVIOUS_LIMIT
+        )
+        if (changed) saveWordTransitions()
+    }
+
     private fun learnWord(word: String) {
         val trimmed = word.trim()
         if (trimmed.length < 2 || trimmed.length > 30) return
@@ -1058,26 +1087,6 @@ class DroidImeService : InputMethodService() {
         if (dict != null && dict.indexOf(key) >= 0) return
         userWords[key] = (userWords[key] ?: 0) + 1
         saveUserWords()
-    }
-
-    // Single-edit distance: substitution, insertion or deletion of one character.
-    private fun oneEdit(a: String, b: String): Boolean {
-        if (a == b) return false
-        if (a.length == b.length) {
-            var diff = 0
-            for (k in a.indices) if (a[k] != b[k]) diff++
-            return diff == 1
-        }
-        if (kotlin.math.abs(a.length - b.length) > 1) return false
-        val long = if (a.length > b.length) a else b
-        val short = if (a.length > b.length) b else a
-        var i = 0
-        var j = 0
-        while (i < long.length && j < short.length) {
-            if (long[i] == short[j]) { i++; j++ } else i++
-            if (i - j > 1) return false
-        }
-        return true
     }
 
     // Learn whatever word the caret currently sits after: useful for Thai, whose words carry no
@@ -1094,9 +1103,13 @@ class DroidImeService : InputMethodService() {
             if (run.length >= 2) learnWord(run)
         } else {
             var s = before.length
-            while (s > 0 && (before[s - 1] in 'a'..'z' || before[s - 1] in 'A'..'Z' || before[s - 1] == '\'')) s--
+            while (s > 0 && NextWordModel.isEnglishWordChar(before[s - 1])) s--
             val word = before.substring(s)
-            if (word.length >= 2) learnWord(word)
+            if (word.length >= 2) {
+                val context = NextWordModel.context(before)
+                learnWord(word)
+                learnWordTransition(context.previous, word)
+            }
         }
     }
 
@@ -3280,6 +3293,9 @@ class DroidImeService : InputMethodService() {
         )
 
         private const val USER_DICT = "user_dict"
+        private const val NEXT_WORD_DICT = "next_word_model"
+        private const val NEXT_WORDS_PER_PREVIOUS = 16
+        private const val NEXT_WORD_PREVIOUS_LIMIT = 2000
         private const val TOUCH_HISTORY = "touch_history"
         private const val GLIDE_ALTERNATIVES = "glide_alternatives"
         private const val CLIP_DICT = "clipboard_items"
