@@ -43,6 +43,18 @@ class NextWordModelTest {
         assertFalse("hello" in ranked)
     }
 
+    @Test fun contextReadsThaiWordAfterSpace() {
+        val context = NextWordModel.context("สวัสดี ")
+        assertEquals("สวัสดี", context.previous)
+        assertEquals("", context.typed)
+    }
+
+    @Test fun thaiWordsCanBeLearnedAsTransitions() {
+        val transitions = HashMap<String, LinkedHashMap<String, Int>>()
+        assertTrue(NextWordModel.recordTransition(transitions, "สวัสดี", "ขอบคุณ", 16, 2000))
+        assertEquals(listOf("ขอบคุณ"), NextWordModel.learnedNextWords("สวัสดี", transitions))
+    }
+
     @Test fun frequentFallbackExcludesPreviousWord() {
         val ranked = NextWordModel.rankedWords(
             "", "hello", FakeDictionary(), emptyMap(), mapOf("cat" to 9), 5

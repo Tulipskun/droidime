@@ -1,5 +1,6 @@
 package com.tulipskun.droidime
 
+import android.view.inputmethod.BaseInputConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -88,6 +89,38 @@ class LogicTest {
         assertTrue(call(service, "isThaiText", "ไทยๆ") as Boolean)
     }
 
+    @Test fun thaiSuggestionsUseLearnedNextWordAfterSpace() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(arrayOf("สวัสดี", "ขอบคุณ", "ภาษา"), intArrayOf(100, 90, 80))
+        setField(service, "dictTh", dict)
+        call(service, "learnWordTransition", "สวัสดี", "ขอบคุณ")
+        val out = call(service, "thaiSuggestions", "สวัสดี ") as List<*>
+        assertEquals("ขอบคุณ", getField(out[0]!!, "text"))
+    }
+
+    @Test fun thaiNextWordIsLearnedFromTypingWithSpace() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())
+        val connection = BaseInputConnection(editor, true)
+        setField(service, "mInputConnection", connection)
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        setField(
+            service, "dictTh",
+            ctor.newInstance(arrayOf("สวัสดี", "ขอบคุณ", "ภาษา"), intArrayOf(100, 90, 80))
+        )
+
+        call(service, "typeText", "สวัสดี")
+        call(service, "typeSpace")
+        call(service, "typeText", "ขอบคุณ")
+        call(service, "typeSpace")
+
+        val out = call(service, "thaiSuggestions", "สวัสดี ") as List<*>
+        assertEquals("ขอบคุณ", getField(out[0]!!, "text"))
+    }
+
     @Test fun thaiSuggestionsOrdersByScore() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val dict = javaClass.classLoader.let {
@@ -139,6 +172,20 @@ class LogicTest {
         val out = call(service, "englishSuggestions", "test") as List<*>
         assertEquals("test", getField(out[0]!!, "text"))
         assertEquals(3, out.size)
+    }
+
+    @Test fun englishSuggestionsPutCorrectionAheadOfTypo() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(
+            arrayOf("test", "testing", "the"),
+            intArrayOf(80, 40, 100)
+        )
+        setField(service, "dictEn", dict)
+        val out = call(service, "englishSuggestions", "teh") as List<*>
+        assertEquals("the", getField(out[0]!!, "text"))
+        assertEquals("teh", getField(out[out.size - 1]!!, "text"))
     }
 
     @Test fun englishSuggestionsPredictsLearnedNextWordAfterSpace() {
