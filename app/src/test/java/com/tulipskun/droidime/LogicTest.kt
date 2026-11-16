@@ -141,6 +141,32 @@ class LogicTest {
         assertEquals(3, out.size)
     }
 
+    @Test fun englishSuggestionsPredictsLearnedNextWordAfterSpace() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(
+            arrayOf("the", "and", "cat", "dog", "hello", "world"),
+            intArrayOf(100, 90, 80, 70, 60, 50)
+        )
+        setField(service, "dictEn", dict)
+        call(service, "learnWordTransition", "hello", "world")
+        call(service, "learnWordTransition", "hello", "world")
+        val out = call(service, "englishSuggestions", "hello hello ") as List<*>
+        assertEquals("world", getField(out[0]!!, "text"))
+    }
+
+    @Test fun englishSuggestionsFallBackToFrequentWordsAfterSpace() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        val dict = ctor.newInstance(arrayOf("the", "and", "cat", "dog"), intArrayOf(100, 90, 80, 70))
+        setField(service, "dictEn", dict)
+        val out = call(service, "englishSuggestions", "hello ") as List<*>
+        assertTrue("frequent next word was not offered", out.any { getField(it!!, "text") == "the" })
+        assertFalse("previous word should not be suggested again", out.any { getField(it!!, "text") == "hello" })
+    }
+
     @Test fun glideDictionaryUsesStartAndEndCharacterIndex() {
         val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
         val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
