@@ -1,36 +1,45 @@
-# AGENTS.md
+# Engineering Standards & Execution Guardrails
 
-## Workflow
+## 1. Codebase Navigation & Reading Discipline
+- **Structure-first exploration:** Always start by inspecting the directory tree and file structure to understand module boundaries, architectural layers, and entry points before opening files.
+- **No blind keyword grepping:** Strictly DO NOT guess keywords or run speculative grep/regex searches across the codebase to hunt for logic. Navigate deterministically by following directory conventions, entry points, and explicit import/export chains.
+- **Read full files in context:** Once you identify a relevant file, read the ENTIRE file from top to bottom before proposing or making any changes. Never rely on partial line snippets, as partial reads miss critical types, state mutations, side effects, and local conventions.
+- **Exception for huge files:** Only read in chunks if a file is auto-generated or exceeds 1,000 lines, and still map its full structure (imports, exports, and top-level definitions) first.
 
-- Always push. Never leave committed work only in the local repository.
-- Do not create feature/sub-branches. Commit and push directly to `main`.
-- Version is automatic: CI sets `VERSION_CODE`/`VERSION_NAME` from the workflow run number (1.0.<run>); never hand-edit them. The in-app update check compares the release's versionCode with the installed one.
-- Pushing to `main` triggers the `Android Release` workflow, which builds the signed APK and replaces the rolling `latest` release.
+## 2. Verify Facts & Never Trust Stale Memory
+- **Assume training memory is outdated:** Treat your internal knowledge of frameworks, SDKs, APIs, CLI flags, and library behaviors as potentially stale. Always verify before writing code.
+- **Check project ground truth first:** Inspect manifest and lockfiles (e.g., package.json, pyproject.toml, go.mod, Cargo.toml), installed type definitions, and existing project configurations to confirm exact versions and supported syntax.
+- **Verify external specs:** When integrating external APIs, libraries, or newly released features, consult up-to-date official documentation or available verification tools rather than guessing method signatures, config keys, or deprecated patterns.
 
-## Finding bugs
+## 3. Dependency & Package Discipline
+- **No unauthorized packages:** Never install, upgrade, downgrade, or remove any third-party dependency without explicit user approval.
+- **Reuse before adding:** Always check existing project dependencies and native language/standard-library capabilities first before proposing a new package.
+- **Respect package manager & lockfiles:** Never hand-edit lockfiles. When approved to modify dependencies, strictly use the exact package manager already established in the repository.
 
-- Read the whole code path before running anything: follow one input/action from entry to effect and look for asymmetry between branches (e.g. an event handled in both DOWN and UP, or a start without a matching stop).
-- Check paired handlers end to end: touch DOWN/MOVE/UP/CANCEL, listener register/unregister, repeat start/stop.
+## 4. Root-Cause First & Clean Refactoring (No Legacy Fallbacks)
+- **Diagnose before coding:** Always identify and state the root cause of a bug based on the full file context before modifying any code. Do not guess or apply trial-and-error patches.
+- **Follow codebase standards:** Strictly adhere to the existing architecture, design patterns, naming conventions, and typing rules seen in the surrounding files.
+- **Evaluate necessity & delete obsolete code:** Critically assess whether existing code, helper functions, or branches are still needed. When refactoring or replacing logic, perform a clean, standard-compliant replacement and DELETE superseded code.
+- **No defensive legacy fallbacks:** Strictly DO NOT keep broken, deprecated, or replaced code around "just in case." Never leave behind:
+  - Fallback branches to old logic (e.g., `try { newWay() } catch { oldWay() }` or unnecessary `if/else` legacy paths).
+  - Unused backward-compatibility shims, dead parameters, or orphaned helper functions.
+  - Commented-out code blocks or `// TODO: remove later` leftovers.
+  - Note: Only maintain backward compatibility if an external public API contract explicitly requires it—if unsure, ask the user before adding a fallback.
+- **Zero workarounds:** Never use hacky shortcuts to silence errors. Specifically, DO NOT:
+  - Suppress type or linter errors (e.g., ts-ignore, any, noqa, eslint-disable) without explicit user approval.
+  - Swallow exceptions with empty or generic try/catch blocks.
+  - Hardcode mock values, magic numbers, or special-case conditionals just to make a failing test pass.
+- **Fix the code, not the test:** Never weaken, delete, or skip existing test assertions just to get a green build, unless the business requirement itself intentionally changed.
 
-## Careful verification
+## 5. Pragmatic Testing & Anti-Loop Circuit Breaker
+- **Targeted testing only:** Run only the specific unit or integration test file related to your changes. Do NOT run the full test suite until the final verification step.
+- **3-Strike Circuit Breaker (CRITICAL):** You are allowed a maximum of 3 consecutive attempts to fix a failing test, build, or lint error.
+  - If attempt #2 fails, pause and re-read the full relevant files and their imports to verify your root-cause hypothesis instead of tweaking syntax blindly.
+  - If attempt #3 fails, STOP IMMEDIATELY. Do not run more tests or make further edits. Report: (1) what you tried, (2) the exact error output, and (3) your hypothesis on why it is blocked, then ask the user for guidance.
+- **No over-testing:** Write concise tests covering core business logic and realistic edge cases. Do not test third-party libraries, framework internals, or trivial getters/setters.
+- **Verify once, then proceed:** Once targeted tests and type/lint checks pass cleanly, stop testing and move directly to the delivery workflow.
 
-- Prove behaviour with evidence, not assumption — measure the real output (pixel geometry from a reference vs the running build, actual typed text) before claiming a match.
-- Cover every variant, not a representative one: each language, each row, each state.
-- Do not report something verified unless it was actually checked; state plainly what was not.
-
-## Matching Gboard
-
-- Measure reference screenshots, don't eyeball: label connected components of non-background pixels to get key rects, then compare against `layoutRows` output. Reference device is 1080px wide at density 2.8125 (384dp); the measured constants are in `layoutRows`/`rowSpec`/`drawKeyGlyph`.
-- The cloud sandbox has no Android SDK, so Kotlin changes cannot be compiled or rendered there; the GitHub `Android Release` run is the compile check, so look at it after pushing.
-- A local build is possible here, but the default `gradle` on PATH is 8.7 and AGP needs ≥8.9: run `/opt/gradle/gradle-8.9/bin/gradle --no-daemon testDebugUnitTest`, which renders the keyboard states to `app/build/render/` with Robolectric, so a layout change can be checked by looking at the PNGs.
-
-## Testing notes
-
-- `KeyboardRenderTest` renders each keyboard state to `app/build/render/<state>.png` and asserts the frame is not blank. Add a state for any new page or panel.
-- Private state is set in tests with `setField`, which walks the superclass chain — the service's fields are on the outer class, not the nested view.
-- A layout that produces zero cells renders as one flat colour; that is how the clipboard panel bug (cells never assigned) was caught. If a new render is a single colour, check that `cells` is assigned.
-
-## Maintaining this file
-
-- Update AGENTS.md whenever a durable rule or lesson emerges; keep it lean and avoid redundant detail.
-- Write guidance that helps future work, not a log of tasks already done.
+## 6. Mandatory Delivery Workflow & Single-Turn Override Rule
+- **Default post-task pipeline:** Upon completing and verifying any code change, you MUST automatically execute the repository's full standard delivery flow in sequence: **Commit -> Push -> Deploy -> Release** (using the exact commit message conventions, branches, and deployment/release commands established in this project). Do not stop early or wait for permission unless a step fails.
+- **Single-turn override scope (CRITICAL):** Any user instruction to skip, pause, or alter steps in this delivery flow (e.g., "do not commit yet", "commit only", "skip deploy/release") applies **STRICTLY ONCE to the current turn/task only**.
+- **Automatic reset on the next turn:** Never carry over a delivery-flow skip from earlier messages in the conversation history. On the very next user prompt or task, automatically revert to executing the full **Commit -> Push -> Deploy -> Release** pipeline by default, unless the user explicitly repeats the override in their latest message.

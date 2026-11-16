@@ -1,6 +1,7 @@
 package com.tulipskun.droidime
 
 import android.util.Base64
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -50,84 +51,98 @@ class McpServer(
             val output = BufferedOutputStream(s.getOutputStream())
 
             try {
+                // Idle keep-alive connections are dropped instead of pinning a thread.
+                s.soTimeout = KEEP_ALIVE_TIMEOUT_MILLIS
                 val input = BufferedInputStream(s.getInputStream())
-                val requestLine = readLine(input) ?: return
-                val parts = requestLine.split(" ")
 
-                if (parts.size < 2) {
-                    writeResponse(output, 400, "application/json", error(null, -32600, "Invalid HTTP request"))
-                    return
-                }
+                while (running) {
+                    val requestLine = readLine(input) ?: return
+                    if (requestLine.isBlank()) continue
 
-                val method = parts[0]
-                val path = parts[1].substringBefore('?')
-                val headers = readHeaders(input)
+                    val parts = requestLine.split(" ")
 
-                if (path != endpointPath) {
-                    writeResponse(output, 404, "application/json", error(null, -32601, "Not found"))
-                    return
-                }
+                    if (parts.size < 2) {
+                        writeResponse(output, 400, "application/json", error(null, -32600, "Invalid HTTP request"))
+                        return
+                    }
 
-                if (method == "OPTIONS") {
-                    writeResponse(output, 204, null, null, cors = true)
-                    return
-                }
+                    val method = parts[0]
+                    val path = parts[1].substringBefore('?')
+                    val headers = readHeaders(input)
+                    val keepAlive = headers["connection"]?.lowercase()?.contains("keep-alive") == true
 
-                if (method != "POST") {
+                    if (path != endpointPath) {
+                        writeResponse(output, 404, "application/json", error(null, -32601, "Not found"), keepAlive = keepAlive)
+                        if (keepAlive) continue else return
+                    }
+
+                    if (method == "OPTIONS") {
+                        writeResponse(output, 204, null, null, cors = true, keepAlive = keepAlive)
+                        if (keepAlive) continue else return
+                    }
+
+                    if (method != "POST") {
+                        writeResponse(
+                            output,
+                            405,
+                            "application/json",
+                            error(null, -32601, "Method not allowed"),
+                            cors = true,
+                            keepAlive = keepAlive
+                        )
+                        if (keepAlive) continue else return
+                    }
+
+                    val origin = headers["origin"]
+                    if (origin != null && origin != "null") {
+                        writeResponse(
+                            output,
+                            403,
+                            "application/json",
+                            error(null, -32000, "Invalid Origin"),
+                            cors = true,
+                            keepAlive = keepAlive
+                        )
+                        if (keepAlive) continue else return
+                    }
+
+                    val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
+                    if (contentLength <= 0 || contentLength > MAX_BODY) {
+                        writeResponse(
+                            output,
+                            400,
+                            "application/json",
+                            error(null, -32600, "Invalid Content-Length"),
+                            cors = true,
+                            keepAlive = keepAlive
+                        )
+                        if (keepAlive) continue else return
+                    }
+
+                    val request = JSONObject(
+                        String(readExactly(input, contentLength), StandardCharsets.UTF_8)
+                    )
+
+                    val requestMethod = request.optString("method")
+
+                    if (requestMethod.startsWith("notifications/")) {
+                        writeResponse(output, 202, null, null, cors = true, keepAlive = keepAlive)
+                        if (keepAlive) continue else return
+                    }
+
+                    val response = dispatch(request, headers)
+
                     writeResponse(
                         output,
-                        405,
+                        200,
                         "application/json",
-                        error(null, -32601, "Method not allowed"),
-                        cors = true
+                        response.toString(),
+                        cors = true,
+                        keepAlive = keepAlive
                     )
-                    return
+
+                    if (!keepAlive) return
                 }
-
-                val origin = headers["origin"]
-                if (origin != null && origin != "null") {
-                    writeResponse(
-                        output,
-                        403,
-                        "application/json",
-                        error(null, -32000, "Invalid Origin"),
-                        cors = true
-                    )
-                    return
-                }
-
-                val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-                if (contentLength <= 0 || contentLength > MAX_BODY) {
-                    writeResponse(
-                        output,
-                        400,
-                        "application/json",
-                        error(null, -32600, "Invalid Content-Length"),
-                        cors = true
-                    )
-                    return
-                }
-
-                val request = JSONObject(
-                    String(readExactly(input, contentLength), StandardCharsets.UTF_8)
-                )
-
-                val requestMethod = request.optString("method")
-
-                if (requestMethod.startsWith("notifications/")) {
-                    writeResponse(output, 202, null, null, cors = true)
-                    return
-                }
-
-                val response = dispatch(request, headers)
-
-                writeResponse(
-                    output,
-                    200,
-                    "application/json",
-                    response.toString(),
-                    cors = true
-                )
             } catch (e: ProtocolException) {
                 writeResponse(
                     output,
@@ -221,7 +236,25 @@ class McpServer(
                         )
                         .put(
                             "instructions",
-                            "DroidIME exposes Android UI perception and input tools. Operate as an observe-plan-act-verify agent: inspect_ui and screenshot before acting; prefer find_and_tap for semantic targets; use coordinate gestures only when no matching UI node exists; after every state-changing action inspect the UI or screenshot to verify the expected result; do not claim success from an action response alone; if verification fails, re-observe and retry only when safe. wait_for_ui can wait for a visible text, content description, or resource ID. All input execution remains routed through ShizukuBridge."
+                            "Droid-MCP drives a real Android device and follows observe-plan-act-verify. " +
+                                "Coordinates are PIXELS, not percentages: x is the offset from the left edge " +
+                                "and y from the top edge. Call screen_size once to learn the bounds, and read " +
+                                "ui_hierarchy for exact node bounds before coordinate taps. " +
+                                "To observe: inspect_ui (structured JSON with text, content descriptions, " +
+                                "resource IDs, bounds and clickability), ui_hierarchy (XML, cheap), or screenshot (PNG). " +
+                                "Prefer find_and_tap for semantic targets; use coordinate gestures only when no " +
+                                "matching UI node exists. To act: tap, long_press, swipe, gesture, multi_touch, " +
+                                "key_event, input_text, click_sequence. After every state-changing action, observe " +
+                                "again with inspect_ui, ui_hierarchy, or screenshot to verify the expected result; " +
+                                "do not claim success from an action response alone. If verification fails, " +
+                                "re-observe and retry only when safe. wait_for_ui can wait for a visible text, " +
+                                "content description, or resource ID. For a deterministic multi-step path, send " +
+                                "click_sequence with all coordinates in one call instead of several tap calls. " +
+                                "act_and_observe runs one action, waits for the UI to settle and returns a screenshot " +
+                                "in a single call; use it only when you need the screen immediately after acting. " +
+                                "A visible pointer is drawn on the device for every tap, hold and swipe, so a " +
+                                "person watching can see exactly where the agent acted. All input execution " +
+                                "remains routed through ShizukuBridge."
                         )
                 )
             }
@@ -255,33 +288,39 @@ class McpServer(
     private fun callTool(name: String, args: JSONObject): JSONObject {
         return try {
             when (name) {
-                "tap" -> toolWithScreenshot("tap completed") {
-                    executor.tap(args.getString("x"), args.getString("y"))
+                // --- Actuation only. No screenshot, no settle: the caller decides
+                // when to observe, exactly like ARTEMIS's act-then-observe split.
+                "tap" -> toolText("tap completed") {
+                    executor.tap(args.optString("x"), args.optString("y"))
                 }
 
-                "long_press" -> toolWithScreenshot("long_press completed") {
-                    executor.longPress(args.getString("x"), args.getString("y"), args.optLong("duration_ms", DEFAULT_LONG_PRESS_DURATION_MILLIS))
+                "long_press" -> toolText("long_press completed") {
+                    executor.longPress(
+                        args.optString("x"),
+                        args.optString("y"),
+                        args.optLong("duration_ms", DEFAULT_LONG_PRESS_DURATION_MILLIS)
+                    )
                 }
 
-                "swipe" -> toolWithScreenshot("swipe completed") {
+                "swipe" -> toolText("swipe completed") {
                     executor.swipe(
-                        args.getString("x1"),
-                        args.getString("y1"),
-                        args.getString("x2"),
-                        args.getString("y2"),
+                        args.optString("x1"),
+                        args.optString("y1"),
+                        args.optString("x2"),
+                        args.optString("y2"),
                         args.getLong("duration_ms")
                     )
                 }
 
-                "gesture" -> toolWithScreenshot("gesture completed") {
+                "gesture" -> toolText("gesture completed") {
                     executor.gesture(args.getJSONArray("points"))
                 }
 
-                "multi_touch" -> toolWithScreenshot("multi_touch completed") {
+                "multi_touch" -> toolText("multi_touch completed") {
                     executor.multiTouch(args.getJSONArray("pointers"))
                 }
 
-                "key_event" -> toolWithScreenshot("key_event completed") {
+                "key_event" -> toolText("key_event completed") {
                     val keycodes = if (args.has("keycodes")) {
                         val array = args.getJSONArray("keycodes")
                         require(array.length() > 0) { "keycodes must not be empty" }
@@ -290,42 +329,77 @@ class McpServer(
                         intArrayOf(args.getInt("keycode"))
                     }
 
-                    executor.keyChord(
-                        keycodes,
-                        args.optLong("hold_ms", 0L)
-                    )
+                    executor.keyChord(keycodes, args.optLong("hold_ms", 0L))
                 }
 
-                "input_text" -> toolWithScreenshot("input_text completed") {
+                "input_text" -> toolText("input_text completed") {
                     executor.inputText(args.getString("text"))
                 }
 
                 "inspect_ui" -> {
                     val nodes = executor.inspectUi()
+
                     toolText(nodes.toString())
                 }
 
                 "find_and_tap" -> {
                     val match = executor.findAndTapUi(args.getString("query"))
-                    Thread.sleep(SCREENSHOT_DELAY_MILLIS)
-                    val png = executor.screenshot()
-                    JSONObject()
-                        .put("resultType", "complete")
-                        .put("content", JSONArray()
-                            .put(toolTextItem(match.toString()))
-                            .put(JSONObject()
-                                .put("type", "image")
-                                .put("data", Base64.encodeToString(png, Base64.NO_WRAP))
-                                .put("mimeType", "image/png")))
-                        .put("isError", false)
+
+                    toolText("find_and_tap completed: " + match)
                 }
 
                 "wait_for_ui" -> {
-                    val result = executor.waitForUiText(
+                    val match = executor.waitForUiText(
                         args.getString("query"),
-                        args.optLong("timeout_ms", 10000L)
+                        args.optLong("timeout_ms", DEFAULT_WAIT_FOR_UI_TIMEOUT_MILLIS)
                     )
-                    toolText(result.toString())
+
+                    toolText(match.toString())
+                }
+
+                // Atomic chained execution: N taps in one round trip. This is the
+                // tool ARTEMIS treats as structurally required, because it is what
+                // defeats turn latency on deterministic UI paths.
+                "click_sequence" -> {
+                    val sequence = args.getJSONArray("sequence")
+                    require(sequence.length() > 0) { "sequence must not be empty" }
+                    val delayMs = args.optLong("delay_ms", DEFAULT_SEQUENCE_DELAY_MILLIS)
+
+                    val points = ArrayList<Pair<String, String>>(sequence.length())
+                    for (i in 0 until sequence.length()) {
+                        val entry = sequence.getJSONArray(i)
+                        require(entry.length() >= 2) {
+                            "sequence entry $i must be [x, y]"
+                        }
+                        points.add(entry.getInt(0).toString() to entry.getInt(1).toString())
+                    }
+
+                    val tapped = executor.clickSequence(points, delayMs)
+                    toolText("Tapped in sequence at " + tapped.joinToString("; "))
+                }
+
+                // --- Observation only. ---
+                "screen_size" -> {
+                    val (width, height) = executor.screenDimensions()
+
+                    JSONObject()
+                        .put("resultType", "complete")
+                        .put(
+                            "content",
+                            JSONArray().put(
+                                toolTextItem("width=" + width + " height=" + height)
+                            )
+                        )
+                        .put("isError", false)
+                }
+
+                "ui_hierarchy" -> {
+                    val xml = executor.uiHierarchy()
+
+                    JSONObject()
+                        .put("resultType", "complete")
+                        .put("content", JSONArray().put(toolTextItem(xml)))
+                        .put("isError", false)
                 }
 
                 "screenshot" -> {
@@ -338,61 +412,90 @@ class McpServer(
                             JSONArray().put(
                                 JSONObject()
                                     .put("type", "image")
-                                    .put(
-                                        "data",
-                                        Base64.encodeToString(png, Base64.NO_WRAP)
-                                    )
+                                    .put("data", Base64.encodeToString(png, Base64.NO_WRAP))
                                     .put("mimeType", "image/png")
                             )
                         )
                         .put("isError", false)
                 }
 
+                // --- Act then observe in one call, for callers that want the old
+                // behaviour. Opt-in, so the default path stays fast.
+                "act_and_observe" -> {
+                    val action = args.getJSONObject("action")
+                    val settleMs = args.optLong("settle_ms", DEFAULT_SETTLE_MILLIS)
+                    val includeImage = args.optBoolean("include_image", true)
+
+                    val actionResult = callTool(action.getString("name"), action)
+
+                    if (actionResult.optBoolean("isError", false)) {
+                        actionResult
+                    } else {
+                        Thread.sleep(settleMs.coerceAtLeast(0L))
+
+                        val content = JSONArray()
+                        content.put(toolTextItem("action completed, screen observed"))
+
+                        if (includeImage) {
+                            val png = executor.screenshot()
+                            content.put(
+                                JSONObject()
+                                    .put("type", "image")
+                                    .put("data", Base64.encodeToString(png, Base64.NO_WRAP))
+                                    .put("mimeType", "image/png")
+                            )
+                        }
+
+                        JSONObject()
+                            .put("resultType", "complete")
+                            .put("content", content)
+                            .put("isError", false)
+                    }
+                }
+
                 else -> JSONObject()
                     .put("resultType", "complete")
-                    .put(
-                        "content",
-                        JSONArray().put(toolTextItem("Unknown tool: $name"))
-                    )
+                    .put("content", JSONArray().put(toolTextItem("Unknown tool: $name")))
                     .put("isError", true)
             }
         } catch (e: Throwable) {
+            Log.e("DroidIME-MCP", "tool '" + name + "' failed", e)
+
+            // Report the whole exception chain, including wrapped reflection
+            // causes, so a failure is diagnosable instead of opaque.
+            val chain = StringBuilder()
+            var current: Throwable? = e
+            var depth = 0
+            while (current != null && depth < 5) {
+                if (depth > 0) chain.append(" <- ")
+                chain.append(current.javaClass.simpleName)
+                    .append(": ")
+                    .append(current.message ?: "(no message)")
+                current = current.cause
+                depth++
+            }
+
             JSONObject()
                 .put("resultType", "complete")
                 .put(
                     "content",
                     JSONArray().put(
-                        toolTextItem(e.message ?: "Tool execution failed")
+                        toolTextItem("Tool execution failed: " + chain)
                     )
                 )
                 .put("isError", true)
         }
     }
 
-    private fun toolWithScreenshot(
+    private fun toolText(
         text: String,
         action: () -> Unit
     ): JSONObject {
         action()
-        Thread.sleep(SCREENSHOT_DELAY_MILLIS)
-        val png = executor.screenshot()
 
         return JSONObject()
             .put("resultType", "complete")
-            .put(
-                "content",
-                JSONArray()
-                    .put(toolTextItem(text))
-                    .put(
-                        JSONObject()
-                            .put("type", "image")
-                            .put(
-                                "data",
-                                Base64.encodeToString(png, Base64.NO_WRAP)
-                            )
-                            .put("mimeType", "image/png")
-                    )
-            )
+            .put("content", JSONArray().put(toolTextItem(text)))
             .put("isError", false)
     }
 
@@ -487,7 +590,8 @@ class McpServer(
         status: Int,
         contentType: String?,
         body: Any?,
-        cors: Boolean = false
+        cors: Boolean = false,
+        keepAlive: Boolean = false
     ) {
         val bytes = body?.toString()?.toByteArray(StandardCharsets.UTF_8) ?: ByteArray(0)
 
@@ -497,7 +601,7 @@ class McpServer(
                 .append(' ')
                 .append(statusText(status))
                 .append("\r\n")
-            append("Connection: close\r\n")
+            append(if (keepAlive) "Connection: keep-alive\r\n" else "Connection: close\r\n")
             if (cors) {
                 append("Access-Control-Allow-Origin: null\r\n")
                 append("Access-Control-Allow-Methods: POST, OPTIONS\r\n")
@@ -545,7 +649,12 @@ class McpServer(
         )
         private const val UNSUPPORTED_PROTOCOL_VERSION = -32602
         private const val MAX_BODY = 1024 * 1024
-        private const val SCREENSHOT_DELAY_MILLIS = 1000L
+        // Only used by the opt-in act_and_observe tool. ARTEMIS settles 400ms
+        // before observing; plain actions no longer pay this at all.
+        private const val DEFAULT_SETTLE_MILLIS = 400L
+        private const val DEFAULT_SEQUENCE_DELAY_MILLIS = 50L
+        private const val DEFAULT_WAIT_FOR_UI_TIMEOUT_MILLIS = 10_000L
+        private const val KEEP_ALIVE_TIMEOUT_MILLIS = 30_000
         private const val DEFAULT_LONG_PRESS_DURATION_MILLIS = 3000L
     }
 }

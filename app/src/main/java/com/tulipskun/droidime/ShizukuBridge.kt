@@ -1,15 +1,19 @@
 package com.tulipskun.droidime
 
 import android.content.ClipData
+import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Parcel
 import android.os.SystemClock
+import android.util.DisplayMetrics
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.WindowManager
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 import org.json.JSONArray
@@ -20,10 +24,19 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class ShizukuBridge(private val preferences: SharedPreferences) {
+class ShizukuBridge(
+    private val context: Context,
+    private val preferences: SharedPreferences,
+    private val overlay: PointerOverlay? = null
+) {
     private val lock = Any()
 
     fun preferences(): SharedPreferences = preferences
+
+    fun screenDimensions(): Pair<Int, Int> {
+        val size = screenSize()
+        return size.width to size.height
+    }
 
     fun checkConnection(): String {
         ensureReady()
@@ -43,16 +56,45 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
     private fun ensureReady() {
         if (!Shizuku.pingBinder()) {
-            throw IllegalStateException("Shizuku is not running")
+            Log.e(TAG, "Shizuku binder not received in this process")
+            throw IllegalStateException(
+                "Shizuku is not running (binder not received in app process)"
+            )
         }
 
         if (
             Shizuku.checkSelfPermission() !=
                 PackageManager.PERMISSION_GRANTED
         ) {
+            Log.e(TAG, "Shizuku permission denied for this app")
             throw SecurityException(
                 "Droid-MCP is not authorized in Shizuku"
             )
+        }
+    }
+
+    /**
+     * Starts a privileged shell process through Shizuku. Reflection wraps any
+     * server-side failure in InvocationTargetException, whose message is null,
+     * which used to surface as the opaque "Tool execution failed". Unwrap it.
+     */
+    private fun newShizukuProcess(command: String): Process {
+        val method = Shizuku::class.java.getDeclaredMethod(
+            "newProcess",
+            Array<String>::class.java,
+            Array<String>::class.java,
+            String::class.java
+        )
+        method.isAccessible = true
+        return try {
+            method.invoke(
+                null,
+                arrayOf("sh", "-c", command),
+                null,
+                null
+            ) as Process
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw e.targetException ?: e
         }
     }
 
@@ -60,20 +102,7 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         ensureReady()
 
         synchronized(lock) {
-            val process = Shizuku::class.java
-                .getDeclaredMethod(
-                    "newProcess",
-                    Array<String>::class.java,
-                    Array<String>::class.java,
-                    String::class.java
-                )
-                .apply { isAccessible = true }
-                .invoke(
-                    null,
-                    arrayOf("sh", "-c", command),
-                    null,
-                    null
-                ) as Process
+            val process = newShizukuProcess(command)
 
             val stdout = ByteArrayOutputStream()
             val stderr = ByteArrayOutputStream()
@@ -161,16 +190,60 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
     fun tap(x: String, y: String) {
         val size = screenSize()
-        val px = percentToPixel(x, size.width)
-        val py = percentToPixel(y, size.height)
-        runCommand("input tap $px $py")
+        val px = toPixel(x, size.width)
+        val py = toPixel(y, size.height)
+
+        overlay?.showTap(px, py)
+
+        // Direct binder injection: `input tap` costs a full shell process per tap.
+        val downTime = SystemClock.uptimeMillis()
+        val pointerIds = intArrayOf(0)
+        val positions = arrayOf(intArrayOf(px, py))
+
+        injectMotionEvent(
+            createMotionEvent(downTime, MotionEvent.ACTION_DOWN, pointerIds, positions)
+        )
+        try {
+            Thread.sleep(TAP_HOLD_MILLIS)
+        } finally {
+            injectMotionEvent(
+                createMotionEvent(downTime, MotionEvent.ACTION_UP, pointerIds, positions)
+            )
+        }
+    }
+
+    /**
+     * Taps a list of pixel coordinates back to back in one call, with a fixed gap
+     * between taps. Mirrors ARTEMIS's click_sequence: the point is to collapse N
+     * deterministic taps into a single MCP round trip.
+     */
+    fun clickSequence(points: List<Pair<String, String>>, delayMs: Long): List<String> {
+        require(points.isNotEmpty()) { "sequence must not be empty" }
+        require(delayMs >= 0) { "delay_ms must be >= 0" }
+
+        val size = screenSize()
+        val tapped = ArrayList<String>(points.size)
+
+        points.forEachIndexed { index, (x, y) ->
+            tap(x, y)
+            tapped.add("[" + toPixel(x, size.width) + ", " + toPixel(y, size.height) + "]")
+
+            if (index < points.size - 1 && delayMs > 0) {
+                Thread.sleep(delayMs)
+            }
+        }
+
+        return tapped
     }
 
     fun longPress(x: String, y: String, durationMs: Long) {
         require(durationMs >= 200) { "duration_ms must be >= 200" }
         val size = screenSize()
-        val px = percentToPixel(x, size.width)
-        val py = percentToPixel(y, size.height)
+        val px = toPixel(x, size.width)
+        val py = toPixel(y, size.height)
+
+        overlay?.showLongPress(px, py, durationMs)
+
         val downTime = SystemClock.uptimeMillis()
         injectMotionEvent(createMotionEvent(downTime, MotionEvent.ACTION_DOWN, intArrayOf(0), arrayOf(intArrayOf(px, py))))
         try {
@@ -192,11 +265,46 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         }
 
         val size = screenSize()
-        val px1 = percentToPixel(x1, size.width)
-        val py1 = percentToPixel(y1, size.height)
-        val px2 = percentToPixel(x2, size.width)
-        val py2 = percentToPixel(y2, size.height)
-        runCommand("input swipe $px1 $py1 $px2 $py2 $durationMs")
+        val px1 = toPixel(x1, size.width)
+        val py1 = toPixel(y1, size.height)
+        val px2 = toPixel(x2, size.width)
+        val py2 = toPixel(y2, size.height)
+
+        overlay?.showSwipe(px1, py1, px2, py2)
+
+        // Direct binder injection with interpolated MOVE events, so a swipe does
+        // not wait on a shell process and keeps a smooth motion path.
+        val downTime = SystemClock.uptimeMillis()
+        val pointerIds = intArrayOf(0)
+        val positions = arrayOf(intArrayOf(px1, py1))
+
+        injectMotionEvent(
+            createMotionEvent(downTime, MotionEvent.ACTION_DOWN, pointerIds, positions)
+        )
+
+        val stepDelay = if (durationMs > 0) durationMs / SWIPE_STEPS else 0L
+
+        try {
+            for (step in 1..SWIPE_STEPS) {
+                val fraction = step.toFloat() / SWIPE_STEPS
+                positions[0][0] = (px1 + (px2 - px1) * fraction).toInt()
+                positions[0][1] = (py1 + (py2 - py1) * fraction).toInt()
+
+                injectMotionEvent(
+                    createMotionEvent(downTime, MotionEvent.ACTION_MOVE, pointerIds, positions)
+                )
+
+                if (stepDelay > 0) {
+                    Thread.sleep(stepDelay)
+                }
+            }
+        } finally {
+            positions[0][0] = px2
+            positions[0][1] = py2
+            injectMotionEvent(
+                createMotionEvent(downTime, MotionEvent.ACTION_UP, pointerIds, positions)
+            )
+        }
     }
 
     fun gesture(points: JSONArray) {
@@ -205,43 +313,59 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         }
 
         val size = screenSize()
-        val command = StringBuilder()
+
+        val xs = IntArray(points.length())
+        val ys = IntArray(points.length())
+        val delays = LongArray(points.length())
 
         for (i in 0 until points.length()) {
             val point = points.getJSONObject(i)
-            val x = point.getString("x")
-            val y = point.getString("y")
-            val delay = point.getLong("delay_ms")
+            xs[i] = toPixel(point.opt("x").toString(), size.width)
+            ys[i] = toPixel(point.opt("y").toString(), size.height)
+            delays[i] = point.optLong("delay_ms", 0L)
 
-            require(delay >= 0) {
+            require(delays[i] >= 0) {
                 "delay_ms must be >= 0"
-            }
-
-            if (i == 0) {
-                command.append(
-                    "input motionevent DOWN " +
-                        percentToPixel(x, size.width) + " " + percentToPixel(y, size.height)
-                )
-            } else {
-                command.append(
-                    "; sleep " + delay / 1000.0
-                )
-                command.append(
-                    "; input motionevent MOVE " +
-                        percentToPixel(x, size.width) + " " + percentToPixel(y, size.height)
-                )
             }
         }
 
-        val last = points.getJSONObject(points.length() - 1)
+        overlay?.showSwipe(xs[0], ys[0], xs[points.length() - 1], ys[points.length() - 1])
 
-        command.append(
-            "; input motionevent UP " +
-                percentToPixel(last.getString("x"), size.width) + " " +
-                percentToPixel(last.getString("y"), size.height)
-        )
+        // Injected directly: the old version built an `input motionevent` shell
+        // pipeline, which cost a process spawn per point.
+        synchronized(lock) {
+            ensureReady()
 
-        runCommand(command.toString())
+            val downTime = SystemClock.uptimeMillis()
+            val pointerIds = intArrayOf(0)
+            val positions = arrayOf(intArrayOf(xs[0], ys[0]))
+
+            injectMotionEvent(
+                createMotionEvent(downTime, MotionEvent.ACTION_DOWN, pointerIds, positions)
+            )
+
+            try {
+                for (i in 1 until points.length()) {
+                    if (delays[i] > 0) {
+                        Thread.sleep(delays[i])
+                    }
+
+                    positions[0][0] = xs[i]
+                    positions[0][1] = ys[i]
+
+                    injectMotionEvent(
+                        createMotionEvent(downTime, MotionEvent.ACTION_MOVE, pointerIds, positions)
+                    )
+                }
+            } finally {
+                positions[0][0] = xs[points.length() - 1]
+                positions[0][1] = ys[points.length() - 1]
+
+                injectMotionEvent(
+                    createMotionEvent(downTime, MotionEvent.ACTION_UP, pointerIds, positions)
+                )
+            }
+        }
     }
 
     fun multiTouch(pointers: JSONArray) {
@@ -277,8 +401,8 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
             for (i in 0 until count) {
                 val point = pointArrays[i]!!.getJSONObject(0)
-                positions[i][0] = percentToPixel(point.getString("x"), size.width)
-                positions[i][1] = percentToPixel(point.getString("y"), size.height)
+                positions[i][0] = toPixel(point.opt("x").toString(), size.width)
+                positions[i][1] = toPixel(point.opt("y").toString(), size.height)
             }
 
             val downTime = SystemClock.uptimeMillis()
@@ -324,8 +448,8 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
                     }
 
                     delayMs = maxOf(delayMs, delay)
-                    positions[i][0] = percentToPixel(point.getString("x"), size.width)
-                    positions[i][1] = percentToPixel(point.getString("y"), size.height)
+                    positions[i][0] = toPixel(point.opt("x").toString(), size.width)
+                    positions[i][1] = toPixel(point.opt("y").toString(), size.height)
                 }
 
                 if (delayMs > 0) {
@@ -367,20 +491,83 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
 
     private data class ScreenSize(val width: Int, val height: Int)
 
-    private fun screenSize(): ScreenSize {
-        val output = runCommand("wm size").stdout.toString(StandardCharsets.UTF_8)
-        val match = Regex("[0-9]+x[0-9]+").findAll(output).lastOrNull()
-            ?: throw IllegalStateException("Unable to determine screen size")
-        val parts = match.value.split("x")
-        return ScreenSize(parts[0].toInt(), parts[1].toInt())
+    // `wm size` reports the natural display size and does not change on rotation,
+    // so it is resolved once instead of spawning a shell for every gesture.
+    @Volatile
+    private var cachedScreenSize: ScreenSize? = null
+
+    fun invalidateScreenSize() {
+        cachedScreenSize = null
     }
 
-    private fun percentToPixel(value: String, size: Int): Int {
-        val match = Regex("^ *([0-9]+([.][0-9]+)?)% *$").matchEntire(value)
-            ?: throw IllegalArgumentException("Coordinate must be a percentage such as 50%")
-        val percent = match.groupValues[1].toDouble()
-        require(percent in 0.0..100.0) { "Coordinate percentage must be between 0% and 100%" }
-        return kotlin.math.round(size * percent / 100.0).toInt().coerceIn(0, size - 1)
+    @Suppress("DEPRECATION")
+    private fun screenSize(): ScreenSize {
+        cachedScreenSize?.let { return it }
+
+        // Read the display locally. This needs no Shizuku call, so coordinate
+        // maths and the visible pointer keep working even when the privileged
+        // shell bridge is unavailable.
+        val local = try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE)
+                as? WindowManager
+            if (wm == null) {
+                null
+            } else if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val bounds = wm.currentWindowMetrics.bounds
+                ScreenSize(bounds.width(), bounds.height())
+            } else {
+                val metrics = DisplayMetrics()
+                wm.defaultDisplay.getRealMetrics(metrics)
+                ScreenSize(metrics.widthPixels, metrics.heightPixels)
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "local display metrics failed", error)
+            null
+        }
+
+        val size = if (local != null && local.width > 0 && local.height > 0) {
+            local
+        } else {
+            val output = runCommand("wm size").stdout
+                .toString(StandardCharsets.UTF_8)
+            val match = Regex("[0-9]+x[0-9]+").findAll(output).lastOrNull()
+                ?: throw IllegalStateException("Unable to determine screen size")
+            val parts = match.value.split("x")
+            ScreenSize(parts[0].toInt(), parts[1].toInt())
+        }
+
+        cachedScreenSize = size
+        Log.d(TAG, "screenSize = " + size.width + "x" + size.height)
+        return size
+    }
+
+    /**
+     * Resolves a coordinate to a pixel offset.
+     *
+     * Pixels are the primary unit. A trailing "%" is still accepted so older
+     * callers keep working, but it is resolved against the current screen size
+     * and should not be used for new work.
+     */
+    private fun toPixel(value: String, size: Int): Int {
+        val trimmed = value.trim()
+
+        if (trimmed.endsWith("%")) {
+            val percent = trimmed.dropLast(1).trim().toDoubleOrNull()
+                ?: throw IllegalArgumentException(
+                    "Coordinate '" + value + "' is not a valid percentage"
+                )
+            require(percent in 0.0..100.0) {
+                "Coordinate percentage must be between 0% and 100%"
+            }
+            return kotlin.math.round(size * percent / 100.0).toInt().coerceIn(0, size - 1)
+        }
+
+        val pixel = trimmed.toDoubleOrNull()
+            ?: throw IllegalArgumentException(
+                "Coordinate '" + value + "' must be a pixel number, e.g. 540"
+            )
+        require(pixel >= 0.0) { "Coordinate must not be negative" }
+        return kotlin.math.round(pixel).toInt().coerceIn(0, size - 1)
     }
 
     private fun createMotionEvent(
@@ -692,6 +879,27 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
 
+    /**
+     * Dumps the accessibility hierarchy as XML. A text tree is far cheaper to
+     * ship to a model than a PNG, and it carries bounds + resource ids that a
+     * screenshot does not, so agents can act without vision on every step.
+     */
+    fun uiHierarchy(): String {
+        val remote = "/data/local/tmp/droid_mcp_ui.xml"
+
+        runCommand("uiautomator dump " + remote + " >/dev/null 2>&1 || true")
+        val xml = runCommand("cat " + remote).stdout.toString(StandardCharsets.UTF_8)
+
+        if (xml.isBlank()) {
+            throw IllegalStateException(
+                "uiautomator produced no hierarchy; the foreground app may block accessibility dumps"
+            )
+        }
+
+        runCommand("rm -f " + remote + " >/dev/null 2>&1 || true")
+        return xml
+    }
+
     fun screenshot(): ByteArray {
         val png = runCommand("screencap -p").stdout
         val source = BitmapFactory.decodeByteArray(png, 0, png.size)
@@ -725,9 +933,7 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
     }
 
 
-    fun inspectUi(): JSONArray {
-        val xml = runCommand("uiautomator dump /sdcard/droidime_window.xml >/dev/null 2>&1 && cat /sdcard/droidime_window.xml").stdout
-            .toString(StandardCharsets.UTF_8)
+    private fun parseUiNodes(xml: String): JSONArray {
         if (!xml.contains("<hierarchy")) {
             throw IllegalStateException("Unable to read Android UI hierarchy")
         }
@@ -735,7 +941,6 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
         val result = JSONArray()
         val nodePattern = Regex("<node\\s+([^>]*?)/?>")
         val attributePattern = Regex("([A-Za-z_-]+)=\"([^\"]*)\"")
-        val boundsPattern = Regex("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]")
 
         for (match in nodePattern.findAll(xml).take(250)) {
             val attrs = attributePattern.findAll(match.groupValues[1])
@@ -743,7 +948,6 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
             val text = attrs["text"].orEmpty()
             val desc = attrs["content-desc"].orEmpty()
             val resource = attrs["resource-id"].orEmpty()
-            val bounds = attrs["bounds"].orEmpty()
             if (text.isBlank() && desc.isBlank() && resource.isBlank()) continue
             result.put(
                 JSONObject()
@@ -753,69 +957,72 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
                     .put("className", attrs["class"].orEmpty())
                     .put("clickable", attrs["clickable"] == "true")
                     .put("enabled", attrs["enabled"] != "false")
-                    .put("bounds", bounds)
+                    .put("bounds", attrs["bounds"].orEmpty())
             )
         }
         return result
     }
 
+    fun inspectUi(): JSONArray = parseUiNodes(uiHierarchy())
+
     fun findAndTapUi(query: String): JSONObject {
         require(query.isNotBlank()) { "query must not be empty" }
-        val xml = runCommand("uiautomator dump /sdcard/droidime_window.xml >/dev/null 2>&1 && cat /sdcard/droidime_window.xml").stdout
-            .toString(StandardCharsets.UTF_8)
-        if (!xml.contains("<hierarchy")) {
-            throw IllegalStateException("Unable to read Android UI hierarchy")
-        }
 
-        val nodePattern = Regex("<node\\s+([^>]*?)/?>")
-        val attributePattern = Regex("([A-Za-z_-]+)=\"([^\"]*)\"")
-        val boundsPattern = Regex("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]")
+        val nodes = inspectUi()
         val target = query.trim().lowercase()
-        val candidates = nodePattern.findAll(xml).mapNotNull { match ->
-            val attrs = attributePattern.findAll(match.groupValues[1])
-                .associate { it.groupValues[1] to it.groupValues[2] }
-            val text = attrs["text"].orEmpty()
-            val desc = attrs["content-desc"].orEmpty()
-            val resource = attrs["resource-id"].orEmpty()
+        val boundsPattern = Regex("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]")
+
+        val candidates = (0 until nodes.length()).mapNotNull { index ->
+            val node = nodes.getJSONObject(index)
+            val text = node.optString("text")
+            val desc = node.optString("contentDescription")
+            val resource = node.optString("resourceId")
             val matchValue = listOf(text, desc, resource).joinToString(" ").lowercase()
-            if (!matchValue.contains(target) || attrs["enabled"] == "false") return@mapNotNull null
-            val bounds = boundsPattern.find(attrs["bounds"].orEmpty()) ?: return@mapNotNull null
+            if (!matchValue.contains(target) || !node.optBoolean("enabled", true)) {
+                return@mapNotNull null
+            }
+            val bounds = boundsPattern.find(node.optString("bounds")) ?: return@mapNotNull null
             val left = bounds.groupValues[1].toInt()
             val top = bounds.groupValues[2].toInt()
             val right = bounds.groupValues[3].toInt()
             val bottom = bounds.groupValues[4].toInt()
             if (right <= left || bottom <= top) return@mapNotNull null
-            val score = (if (attrs["clickable"] == "true") 4 else 0) +
-                (if (text.equals(query, true) || desc.equals(query, true) || resource.endsWith("/$query")) 8 else 0)
-            Triple(attrs, intArrayOf(left, top, right, bottom), score)
+
+            val score = (if (node.optBoolean("clickable")) 4 else 0) +
+                (if (text.equals(query, true) ||
+                    desc.equals(query, true) ||
+                    resource.endsWith("/$query", ignoreCase = true)
+                ) 8 else 0)
+            Triple(node, intArrayOf(left, top, right, bottom), score)
         }.sortedByDescending { it.third }.firstOrNull()
             ?: throw IllegalArgumentException("No visible UI element matched: $query")
 
-        val size = screenSize()
+        val node = candidates.first
         val bounds = candidates.second
-        val centerX = (bounds[0] + bounds[2]) / 2.0
-        val centerY = (bounds[1] + bounds[3]) / 2.0
-        val x = (centerX * 100.0 / size.width).coerceIn(0.0, 100.0)
-        val y = (centerY * 100.0 / size.height).coerceIn(0.0, 100.0)
-        tap("$x%", "$y%")
+        val centerX = (bounds[0] + bounds[2]) / 2
+        val centerY = (bounds[1] + bounds[3]) / 2
+
+        tap(centerX.toString(), centerY.toString())
 
         return JSONObject()
-            .put("matchedText", candidates.first["text"].orEmpty())
-            .put("contentDescription", candidates.first["content-desc"].orEmpty())
-            .put("resourceId", candidates.first["resource-id"].orEmpty())
-            .put("bounds", candidates.first["bounds"].orEmpty())
-            .put("tapX", "$x%")
-            .put("tapY", "$y%")
+            .put("matchedText", node.optString("text"))
+            .put("contentDescription", node.optString("contentDescription"))
+            .put("resourceId", node.optString("resourceId"))
+            .put("bounds", node.optString("bounds"))
+            .put("tapX", centerX.toString())
+            .put("tapY", centerY.toString())
     }
 
     fun waitForUiText(query: String, timeoutMs: Long): JSONObject {
-        require(timeoutMs in 0L..30000L) { "timeout_ms must be between 0 and 30000" }
+        require(timeoutMs in 0L..30_000L) { "timeout_ms must be between 0 and 30000" }
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         do {
             val nodes = inspectUi()
             for (i in 0 until nodes.length()) {
                 val node = nodes.getJSONObject(i)
-                val value = (node.optString("text") + " " + node.optString("contentDescription") + " " + node.optString("resourceId"))
+                val value = (node.optString("text") + " " +
+                    node.optString("contentDescription") + " " +
+                    node.optString("resourceId"))
                 if (value.contains(query, ignoreCase = true)) {
                     return JSONObject().put("found", true).put("element", node)
                 }
@@ -834,7 +1041,10 @@ class ShizukuBridge(private val preferences: SharedPreferences) {
     )
 
     companion object {
+        private const val TAG = "DroidIME-Bridge"
         private const val MAX_SCREENSHOT_EDGE = 1500
+        private const val TAP_HOLD_MILLIS = 40L
+        private const val SWIPE_STEPS = 12
         private const val INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT = 1
         private const val COMMAND_TIMEOUT_SECONDS = 15L
         private const val COMMAND_STREAM_JOIN_MILLIS = 1000L
