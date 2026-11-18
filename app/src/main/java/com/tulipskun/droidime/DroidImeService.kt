@@ -63,7 +63,9 @@ class DroidImeService : InputMethodService() {
         FLAGS("Flags", "🏳️", listOf("🏳️","🏴","🏁","🚩","🏳️‍🌈","🏳️‍⚧️","🇹🇭","🇺🇸","🇬🇧","🇯🇵","🇰🇷","🇨🇳","🇮🇳","🇫🇷","🇩🇪","🇮🇹","🇪🇸","🇧🇷","🇨🇦","🇦🇺","🇳🇿","🇸🇬","🇲🇾","🇮🇩","🇻🇳","🇵🇭","🇱🇦","🇰🇭","🇲🇲"))
     }
 
-    private enum class ToolIcon { GRID, UNDO, TRANSLATE, CLIPBOARD, SETTINGS, SELECT }
+    private enum class ToolIcon {
+        GRID, UNDO, TRANSLATE, GIF, CLIPBOARD, SETTINGS, SELECT, EXPAND
+    }
 
     // Vector icons drawn on keys instead of font glyphs, so they look the same on every device
     // (the globe emoji, for one, renders as a coloured picture on Android).
@@ -230,29 +232,26 @@ class DroidImeService : InputMethodService() {
         val hint: Int
     )
 
+    // Exact values sampled from Gboard's shipped keyboard (light and dark screenshots).
     private val lightPalette = Palette(
-        background = Color.rgb(218, 222, 230),
+        background = Color.rgb(228, 231, 231),
         key = Color.WHITE,
-        special = Color.rgb(194, 202, 216),
-        active = Color.rgb(143, 163, 209),
-        // Gboard's light theme uses a pale blue action key with dark blue ink rather than
-        // the high-contrast indigo button used by the earlier DroidIME palette.
-        enter = Color.rgb(194, 231, 255),
-        text = Color.rgb(34, 39, 49),
-        enterText = Color.rgb(4, 46, 111),
-        hint = Color.rgb(105, 113, 128)
+        special = Color.rgb(189, 221, 220),
+        active = Color.rgb(36, 65, 65),
+        enter = Color.rgb(189, 221, 220),
+        text = Color.rgb(35, 39, 39),
+        enterText = Color.rgb(36, 65, 65),
+        hint = Color.rgb(102, 102, 102)
     )
-    // Dark values are sampled from Gboard's dark theme: special keys (shift, delete, ?123, enter,
-    // comma, period) are lighter than letter keys, and the enter key is not accent-coloured.
     private val darkPalette = Palette(
-        background = Color.rgb(31, 31, 31),
-        key = Color.rgb(57, 57, 57),
-        special = Color.rgb(71, 71, 71),
-        active = Color.rgb(86, 104, 150),
-        enter = Color.rgb(71, 71, 71),
-        text = Color.rgb(227, 227, 227),
-        enterText = Color.rgb(227, 227, 227),
-        hint = Color.rgb(199, 199, 199)
+        background = Color.rgb(20, 24, 24),
+        key = Color.rgb(31, 35, 35),
+        special = Color.rgb(19, 48, 48),
+        active = Color.rgb(19, 48, 48),
+        enter = Color.rgb(19, 48, 48),
+        text = Color.rgb(218, 221, 220),
+        enterText = Color.rgb(147, 176, 175),
+        hint = Color.rgb(147, 150, 149)
     )
 
     private var suggestions: List<Suggestion> = emptyList()
@@ -1997,9 +1996,10 @@ class DroidImeService : InputMethodService() {
             fun tool(icon: ToolIcon, name: String): Cell =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
             val middle: List<Cell> = if (suggestions.isEmpty() && undoText == null) {
+                // Gboard's toolbar: grid, G, GIF, clipboard, settings and the expand arrow.
                 listOf(
-                    tool(ToolIcon.UNDO, "Undo").withAction { sendCtrl(KeyEvent.KEYCODE_Z) },
                     tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
+                    tool(ToolIcon.GIF, "GIF").withAction { showEmoji() },
                     tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() },
                     tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() }
                 )
@@ -2023,14 +2023,13 @@ class DroidImeService : InputMethodService() {
                     slots +
                     listOf(Cell("›", KeyStyle.SUGGESTION, null, action = { rotateSuggestions(true) }))
             }
-            // The cursor tool selects all on a tap and copies the selection on a long-press, which
-            // is how a clip reaches the clipboard panel from the keyboard alone.
-            val cursor = tool(ToolIcon.SELECT, "Text editing")
+            // Gboard's rightmost strip button expands the toolbar; it opens text editing here.
+            val expand = tool(ToolIcon.EXPAND, "Text editing")
                 .withAction { openEditorPanel() }
                 .withLongAction { copySelectionTool() }
             val grid = tool(ToolIcon.GRID, "Choose keyboard")
                 .withAction { showKeyboardPicker() }
-            return listOf(grid) + middle + cursor
+            return listOf(grid) + middle + expand
         }
 
         // The clipboard panel: a header (close arrow, edit action), then one full-width card per
@@ -2659,7 +2658,10 @@ class DroidImeService : InputMethodService() {
             shape.cornerRadius = if (cell.pill) cell.rect.height() / 2f else cornerRadius
             shape.draw(canvas)
 
-            val ink = if (cell.style == KeyStyle.ENTER) colors.enterText else colors.text
+            val ink = when (cell.style) {
+                KeyStyle.ENTER, KeyStyle.SPECIAL, KeyStyle.ACTIVE -> colors.enterText
+                else -> colors.text
+            }
             val glyph = cell.glyph
             if (cell.emojiFace) {
                 drawEmojiKey(canvas, cell, colors)
@@ -3058,6 +3060,10 @@ class DroidImeService : InputMethodService() {
                 iconFill.color = colors.special
                 canvas.drawCircle(cx, cy, dpf(15.7f), iconFill)
             }
+            if (cell.icon == ToolIcon.EXPAND) {
+                iconFill.color = colors.key
+                canvas.drawCircle(cx, cy, dpf(15.7f), iconFill)
+            }
             iconStroke.color = color
             iconStroke.strokeWidth = (s * 0.16f).coerceAtLeast(1.6f * resources.displayMetrics.density)
             iconFill.color = color
@@ -3082,14 +3088,23 @@ class DroidImeService : InputMethodService() {
                     canvas.drawLine(headX, headY, headX + s * 0.1f, headY + s * 0.36f, iconStroke)
                 }
                 ToolIcon.TRANSLATE -> {
-                    val top = cy - s * 0.5f
-                    canvas.drawLine(cx - s * 0.5f, cy + s * 0.1f, cx - s * 0.1f, top, iconStroke)
-                    canvas.drawLine(cx - s * 0.1f, top, cx + s * 0.3f, cy + s * 0.1f, iconStroke)
-                    canvas.drawLine(cx - s * 0.36f, cy - s * 0.12f, cx + s * 0.16f, cy - s * 0.12f, iconStroke)
-                    canvas.drawLine(cx + s * 0.32f, cy - s * 0.5f, cx + s * 0.72f, cy - s * 0.5f, iconStroke)
-                    canvas.drawLine(cx + s * 0.52f, cy - s * 0.5f, cx + s * 0.52f, cy + s * 0.1f, iconStroke)
-                    canvas.drawLine(cx + s * 0.2f, cy + s * 0.1f, cx + s * 0.84f, cy + s * 0.55f, iconStroke)
-                    canvas.drawLine(cx + s * 0.84f, cy + s * 0.1f, cx + s * 0.2f, cy + s * 0.55f, iconStroke)
+                    // Gboard's second toolbar icon is the multicolour "G".
+                    textPaint.color = Color.rgb(66, 133, 244)
+                    textPaint.typeface = mediumFace
+                    textPaint.textSize = s * 1.7f
+                    textPaint.textAlign = Paint.Align.CENTER
+                    val m = textPaint.fontMetrics
+                    canvas.drawText("G", cx, cy - (m.ascent + m.descent) / 2f, textPaint)
+                    textPaint.typeface = Typeface.DEFAULT
+                }
+                ToolIcon.GIF -> {
+                    textPaint.color = color
+                    textPaint.typeface = mediumFace
+                    textPaint.textSize = s * 0.72f
+                    textPaint.textAlign = Paint.Align.CENTER
+                    val m = textPaint.fontMetrics
+                    canvas.drawText("GIF", cx, cy - (m.ascent + m.descent) / 2f, textPaint)
+                    textPaint.typeface = Typeface.DEFAULT
                 }
                 ToolIcon.CLIPBOARD -> {
                     val l = cx - s * 0.52f
@@ -3114,6 +3129,11 @@ class DroidImeService : InputMethodService() {
                         val dy = Math.sin(a).toFloat()
                         canvas.drawLine(cx + dx * r, cy + dy * r, cx + dx * s * 0.66f, cy + dy * s * 0.66f, iconStroke)
                     }
+                }
+                ToolIcon.EXPAND -> {
+                    canvas.drawLine(cx - s * 0.45f, cy - s * 0.5f, cx + s * 0.05f, cy, iconStroke)
+                    canvas.drawLine(cx + s * 0.05f, cy, cx - s * 0.45f, cy + s * 0.5f, iconStroke)
+                    canvas.drawLine(cx + s * 0.45f, cy - s * 0.5f, cx + s * 0.45f, cy + s * 0.5f, iconStroke)
                 }
                 ToolIcon.SELECT -> {
                     canvas.drawLine(cx, cy - s * 0.6f, cx, cy + s * 0.6f, iconStroke)
