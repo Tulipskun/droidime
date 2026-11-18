@@ -2759,8 +2759,6 @@ class DroidImeService : InputMethodService() {
                 val title = if (editorPanelVisible) "Text editing" else cell.label
                 textPaint.textAlign = Paint.Align.LEFT
                 canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
-                textPaint.textAlign = Paint.Align.RIGHT
-                canvas.drawText(cell.label, cell.rect.right - dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.CENTER
                 textPaint.typeface = Typeface.DEFAULT
                 return
