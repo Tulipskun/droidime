@@ -30,7 +30,7 @@ DroidIME includes the Android control MCP server and provisions its own Cloudfla
 
 CF_TOKEN and the generated Tunnel Token are encrypted separately using Android Keystore. The API token is sent only to Cloudflare's API and is not embedded in the APK or sent to AIxodia Engine. Re-running provisioning reuses the existing tunnel for the same device name; changing the device name creates a separate tunnel and leaves the previous tunnel untouched.
 
-The cloudflared binaries for arm64-v8a, armeabi-v7a and x86_64 are built in CI and published as `cloudflared-binaries.zip` next to the APK. The app downloads the binary for the device on first tunnel start and verifies its SHA-256 against the manifest in that zip. Android 7.0 (API 24) or later is required.
+The cloudflared binaries for arm64-v8a, armeabi-v7a and x86_64 are built in CI and published as `cloudflared-binaries.zip` next to the APK, with `cloudflared-version.txt` recording the cloudflared build. The app downloads the binary for the device on first tunnel start, verifies its SHA-256 against the manifest, and reuses the cached copy across app updates unless that build changes. Android 7.0 (API 24) or later is required.
 
 **Security:** Use a dedicated Cloudflare API Token with only the permissions above. The MCP endpoint has no built-in client login; gateway requests are protected by Cloudflare Access and the Worker injects its service-token credentials when proxying to the device origin.
 

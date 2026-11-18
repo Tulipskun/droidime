@@ -106,6 +106,7 @@ jobs:
             done > checksums.sha256
             zip -r ../cloudflared-binaries.zip checksums.sha256 lib
           )
+          echo "${{ steps.cloudflared.outputs.ref }}" > cloudflared-version.txt
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -159,11 +160,11 @@ jobs:
           if gh release view latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release delete latest --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
           fi
-          gh release create latest DroidIME.apk cloudflared-binaries.zip \
+          gh release create latest DroidIME.apk cloudflared-binaries.zip cloudflared-version.txt \
             --repo "${GITHUB_REPOSITORY}" \
             --title "DroidIME ${VERSION_NAME}" \
-            --notes "DroidIME ${VERSION_NAME} (versionCode=${VERSION_CODE}). cloudflared is downloaded on first tunnel start."
-          rm -f DroidIME.apk cloudflared-binaries.zip
+            --notes "DroidIME ${VERSION_NAME} (versionCode=${VERSION_CODE}). cloudflared is downloaded on first tunnel start and only refreshed when its build changes."
+          rm -f DroidIME.apk cloudflared-binaries.zip cloudflared-version.txt
       - name: Remove signing key
         if: always() && github.event_name != 'pull_request'
         run: |

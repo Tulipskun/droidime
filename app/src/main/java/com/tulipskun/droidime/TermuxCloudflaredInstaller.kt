@@ -16,11 +16,15 @@ object TermuxCloudflaredInstaller {
     private const val LIBRARY_NAME = "libcloudflared.so"
     private const val ASSET_URL =
         "https://github.com/Tulipskun/droidime/releases/latest/download/cloudflared-binaries.zip"
+    private const val VERSION_URL =
+        "https://github.com/Tulipskun/droidime/releases/latest/download/cloudflared-version.txt"
     private const val MANIFEST_NAME = "checksums.sha256"
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 60_000
+    private const val VERSION_TIMEOUT_MS = 8_000
     private const val MAX_ZIP_BYTES = 200L * 1024 * 1024
     private const val HASH_KEY = "cloudflared_sha256"
+    private const val VERSION_KEY = "cloudflared_version"
     private const val STATUS_KEY = "cloudflared_install_status"
 
     @Synchronized
@@ -36,10 +40,21 @@ object TermuxCloudflaredInstaller {
             ?: throw IllegalStateException("Unsupported Android ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
         val target = File(File(context.filesDir, "cloudflared-bin"), LIBRARY_NAME)
         val prefs = context.getSharedPreferences("droid_mcp", Context.MODE_PRIVATE)
+        val cached = target.isFile && target.canRead() && target.length() > 1024 * 1024
+        val savedVersion = prefs.getString(VERSION_KEY, null)
         val savedHash = prefs.getString(HASH_KEY, null)
-        if (target.isFile && target.canRead() && target.length() > 1024 * 1024 &&
-            savedHash != null && sha256(target).equals(savedHash, ignoreCase = true)
+
+        // A tiny version file decides whether the 40 MB zip is needed. Updating the app keeps
+        // both preferences, so the cached binary survives app updates unless cloudflared changed.
+        val remoteVersion = readRemoteVersion()
+        if (cached && remoteVersion != null && remoteVersion == savedVersion) {
+            setStatus(context, "Bundled cloudflared ready")
+            return target
+        }
+        if (cached && remoteVersion == null && savedHash != null &&
+            sha256(target).equals(savedHash, ignoreCase = true)
         ) {
+            // Offline with a verified copy: keep it rather than failing the tunnel start.
             setStatus(context, "Bundled cloudflared ready")
             return target
         }
@@ -47,12 +62,31 @@ object TermuxCloudflaredInstaller {
         val zip = download(context)
         try {
             val hash = install(zip, abi, target)
-            prefs.edit().putString(HASH_KEY, hash).apply()
+            prefs.edit()
+                .putString(HASH_KEY, hash)
+                .putString(VERSION_KEY, remoteVersion)
+                .apply()
         } finally {
             zip.delete()
         }
         setStatus(context, "Bundled cloudflared ready")
         return target
+    }
+
+    private fun readRemoteVersion(): String? {
+        val connection = URL(VERSION_URL).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = VERSION_TIMEOUT_MS
+        connection.readTimeout = VERSION_TIMEOUT_MS
+        return try {
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
+            connection.inputStream.bufferedReader().use { it.readText().trim() }
+                .take(64).ifBlank { null }
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun supportedAbi(): String? =

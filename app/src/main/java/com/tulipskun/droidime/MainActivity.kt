@@ -140,7 +140,6 @@ class MainActivity : Activity() {
             val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
             manager.showInputMethodPicker()
         })
-        content.addView(setupCard, sectionParams())
 
         val remoteCard = card()
         remoteCard.addView(sectionTitle("Remote control · MCP"))
@@ -341,7 +340,6 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked -> remotePrefs.edit().putBoolean("auto_start", checked).apply() }
         }
         remoteCard.addView(autoStart)
-        content.addView(remoteCard, sectionParams())
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         refreshRemoteStatus()
 
@@ -365,7 +363,6 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(inputColor, dp(10))
         })
-        content.addView(testCard, sectionParams())
 
         val languageCard = card()
         languageCard.addView(sectionTitle("Languages"))
@@ -395,7 +392,6 @@ class MainActivity : Activity() {
         }
         languageCard.addView(thaiCheck)
         languageCard.addView(englishCheck)
-        content.addView(languageCard, sectionParams())
 
         val sizeCard = card()
         val currentHeight = preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360)
@@ -414,7 +410,6 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         })
-        content.addView(sizeCard, sectionParams())
 
         val themeCard = card()
         themeCard.addView(sectionTitle("Keyboard theme"))
@@ -437,7 +432,6 @@ class MainActivity : Activity() {
             }
         }
         themeCard.addView(themeGroup)
-        content.addView(themeCard, sectionParams())
 
         val feedbackCard = card()
         feedbackCard.addView(sectionTitle("Feedback"))
@@ -464,7 +458,6 @@ class MainActivity : Activity() {
             })
         })
         feedbackCard.addView(prefSwitch("Sound on key press", "key_sound", false))
-        content.addView(feedbackCard, sectionParams())
 
         val typingCard = card()
         typingCard.addView(sectionTitle("Typing"))
@@ -476,7 +469,6 @@ class MainActivity : Activity() {
         typingCard.addView(prefSwitch("Number row on English keyboard", "number_row_en", true))
         typingCard.addView(prefSwitch("Number row on Thai keyboard", "number_row_th", false))
         typingCard.addView(prefSwitch("Clipboard history (tap the clipboard icon)", "clipboard", true))
-        content.addView(typingCard, sectionParams())
 
         val dictionaryCard = card()
         dictionaryCard.addView(sectionTitle("Dictionary"))
@@ -514,7 +506,6 @@ class MainActivity : Activity() {
             } else false
         }
         dictionaryCard.addView(dictionaryResult)
-        content.addView(dictionaryCard, sectionParams())
 
         val learningCard = card()
         learningCard.addView(sectionTitle("Touch coordinate learning"))
@@ -537,7 +528,6 @@ class MainActivity : Activity() {
                 }
                 .show()
         })
-        content.addView(learningCard, sectionParams())
 
         val updateCard = card()
         updateCard.addView(sectionTitle("App update"))
@@ -558,7 +548,6 @@ class MainActivity : Activity() {
         })
         updateButton = actionButton("Check for updates") { checkForUpdate() }
         updateCard.addView(updateButton)
-        content.addView(updateCard, sectionParams())
 
         val logCard = card()
         logCard.addView(sectionTitle("Diagnostic log"))
@@ -569,6 +558,40 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(8))
         })
         logCard.addView(actionButton("View / copy crash log") { showCrashLog() })
+
+        // A single ordered list with small category labels keeps the long settings page scannable.
+        fun category(label: String) {
+            content.addView(TextView(this).apply {
+                text = label
+                textSize = 12f
+                typeface = android.graphics.Typeface.create(
+                    "sans-serif-medium", android.graphics.Typeface.NORMAL
+                )
+                setTextColor(mutedColor)
+                setPadding(dp(4), dp(14), 0, dp(7))
+            })
+        }
+
+        category("SETUP")
+        content.addView(setupCard, sectionParams())
+        content.addView(languageCard, sectionParams())
+        content.addView(testCard, sectionParams())
+
+        category("APPEARANCE & TYPING")
+        content.addView(sizeCard, sectionParams())
+        content.addView(themeCard, sectionParams())
+        content.addView(typingCard, sectionParams())
+        content.addView(feedbackCard, sectionParams())
+
+        category("REMOTE CONTROL")
+        content.addView(remoteCard, sectionParams())
+
+        category("TOOLS")
+        content.addView(dictionaryCard, sectionParams())
+        content.addView(learningCard, sectionParams())
+
+        category("SUPPORT")
+        content.addView(updateCard, sectionParams())
         content.addView(logCard, sectionParams())
 
         val scroll = ScrollView(this).apply {
