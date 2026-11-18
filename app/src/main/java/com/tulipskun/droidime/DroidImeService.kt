@@ -1714,7 +1714,7 @@ class DroidImeService : InputMethodService() {
             return
         }
         val before = connection.getTextBeforeCursor(512, 0)?.toString().orEmpty()
-        val start = TextDeletion.previousWordStart(before)
+        val start = TextDeletion.previousWordStart(before, language == Language.THAI)
         if (start < before.length) {
             undoText = before.substring(start)
             connection.deleteSurroundingText(before.length - start, 0)
@@ -1923,6 +1923,7 @@ class DroidImeService : InputMethodService() {
         private var clipSwipeStartX = 0f
         private var clipSwipeCell: Cell? = null
         private var clipSwipeHandled = false
+        private var clipSwipeDx = 0f
         private var glideStartCell: Cell? = null
         private var glideActive = false
         private var glideLength = 0f
@@ -1981,7 +1982,23 @@ class DroidImeService : InputMethodService() {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             canvas.drawColor(palette.background)
-            cells.forEach { drawCell(canvas, it) }
+            for (cell in cells) {
+                if (cell === clipSwipeCell && clipSwipeDx != 0f) {
+                    // Gboard fades and slides a clip while it is being swiped away.
+                    val alpha = (1f - kotlin.math.abs(clipSwipeDx) / cell.rect.width().coerceAtLeast(1f))
+                        .coerceIn(0.1f, 1f)
+                    val layerPaint = Paint().apply { this.alpha = (alpha * 255).toInt() }
+                    val saved = canvas.saveLayer(
+                        cell.rect.left - cell.rect.width(), cell.rect.top,
+                        cell.rect.right + cell.rect.width(), cell.rect.bottom, layerPaint
+                    )
+                    canvas.translate(clipSwipeDx, 0f)
+                    drawCell(canvas, cell)
+                    canvas.restoreToCount(saved)
+                } else {
+                    drawCell(canvas, cell)
+                }
+            }
             if (clipOpen() && clipMenuId != null) drawClipMenu(canvas, palette)
             if (glideActive && glideX.size > 1) {
                 val trail = Path()
@@ -2408,11 +2425,12 @@ class DroidImeService : InputMethodService() {
             val right = (width - dpf(10f)).coerceAtLeast(left + 1f)
             val gap = dpf(7f)
             val colW = ((right - left - gap * 3f) / 4f).coerceAtLeast(1f)
-            val top = dpf(6f)
+            // Gboard's key block starts right below the header band; no extra top/gap padding.
+            val top = 0f
             val headerH = dpf(42f)
-            val bodyTop = top + headerH + gap
+            val bodyTop = headerH
             val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(bodyTop + 1f)
-            val footerH = dpf(58f)
+            val footerH = dpf(54f)
             val bodyBottom = bottom - footerH - gap
             val rowH = ((bodyBottom - bodyTop - gap * 2f) / 3f).coerceAtLeast(1f)
             fun place(label: String, column: Int, row: Int, spanRows: Int = 1) {
@@ -2447,7 +2465,7 @@ class DroidImeService : InputMethodService() {
             val footerW = (right - left - footerGap * 2f) / 4f
             listOf("Home", "End", "Delete").forEachIndexed { index, label ->
                 val cell = byLabel[label] ?: return@forEachIndexed
-                val x = when (index) { 0 -> left; 1 -> left + footerW * 1.5f + footerGap * 0.5f; else -> left + footerW * 3f + footerGap }
+                val x = when (index) { 0 -> left; 1 -> left + footerW * 1.5f + footerGap; else -> left + footerW * 3f + footerGap * 2f }
                 val w = if (index == 2) footerW else footerW * 1.5f
                 cell.rect.set(x, footerY, (x + w).coerceAtMost(right), bottom)
                 cell.touchRect.set(cell.rect.left, footerY, cell.rect.right, height.toFloat())
@@ -2475,12 +2493,14 @@ class DroidImeService : InputMethodService() {
                 }
                 val bottom = top + h
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
-                val leftEdge = dpf(4f); val usableWidth = (width - dpf(8f)).coerceAtLeast(1f)
+                // Gboard keeps ~10dp outer margins and ~8dp between cards so they never touch.
+                val leftEdge = dpf(6f); val usableWidth = (width - dpf(12f)).coerceAtLeast(1f)
                 var left = leftEdge
                 row.forEach { (weight, cell) ->
                     val right = left + usableWidth * weight / totalWeight
                     if (cell != null) {
-                        cell.rect.set(left, top, right, bottom)
+                        val inset = if (first?.style == KeyStyle.CLIP) dpf(4f) else 0f
+                        cell.rect.set(left + inset, top, right - inset, bottom)
                         val bandTop = if (index == 0) 0f else top - gap / 2f
                         val bandBottom = (bottom + gap / 2f).coerceAtMost(height.toFloat())
                         cell.touchRect.set(left, bandTop, right, bandBottom); flat.add(cell)
@@ -2892,7 +2912,7 @@ class DroidImeService : InputMethodService() {
                 textPaint.textAlign = Paint.Align.LEFT
                 val m = textPaint.fontMetrics
                 canvas.drawText(
-                    cell.label, cell.rect.left + dpf(14f),
+                    cell.label, cell.rect.left + dpf(4f),
                     cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint
                 )
                 textPaint.textAlign = Paint.Align.CENTER
@@ -3370,12 +3390,15 @@ class DroidImeService : InputMethodService() {
                     }
                     if (panelOpen()) {
                         val cell = cellAt(event.x, event.y)
-                        if (clipSwipeCell != null &&
-                            kotlin.math.abs(event.x - clipSwipeStartX) >
+                        if (clipSwipeCell != null) {
+                            clipSwipeDx = event.x - clipSwipeStartX
+                            if (kotlin.math.abs(clipSwipeDx) >
                                 (clipSwipeCell?.rect?.width() ?: width.toFloat()) * 0.5f
-                        ) {
-                            clipSwipeHandled = true
-                            cancelPendingLongPress()
+                            ) {
+                                clipSwipeHandled = true
+                                cancelPendingLongPress()
+                            }
+                            invalidate()
                         }
                         if (cell !== pressed) {
                             pressed = cell
@@ -3429,11 +3452,13 @@ class DroidImeService : InputMethodService() {
                             deleteClip(clipSwipeCell!!.clipId!!)
                             clipSwipeCell = null
                             clipSwipeHandled = false
+                            clipSwipeDx = 0f
                             longPressFired = false
                             return true
                         }
                         clipSwipeCell = null
                         clipSwipeHandled = false
+                        clipSwipeDx = 0f
                         if (cell != null && cell.style != KeyStyle.SECTION && !longPressFired &&
                             cellAt(event.x, event.y) === cell
                         ) {
@@ -3504,6 +3529,7 @@ class DroidImeService : InputMethodService() {
                     deleteSwipeHandled = false
                     clipSwipeCell = null
                     clipSwipeHandled = false
+                    clipSwipeDx = 0f
                     glideX.clear()
                     glideY.clear()
                     cancelPendingLongPress()

@@ -1,7 +1,11 @@
 package com.tulipskun.droidime
 
+import java.text.BreakIterator
+import java.util.Locale
+
 // Backward deletion boundaries that match what a user sees, not raw UTF-16 code units.
 internal object TextDeletion {
+    private val thaiLocale = Locale.forLanguageTag("th")
     private fun isThaiMark(codePoint: Int): Boolean = when (codePoint) {
         0x0E31, 0x0E33, 0x0E34, 0x0E35, 0x0E36, 0x0E37,
         0x0E38, 0x0E39, 0x0E3A,
@@ -56,9 +60,18 @@ internal object TextDeletion {
     }
 
     // Gboard's swipe-left from Delete removes one word, including a trailing separator.
-    fun previousWordStart(text: String): Int {
+    // Thai has no spaces, so whitespace splitting would delete the whole sentence; use ICU's word
+    // BreakIterator there (the same API Gboard uses) and keep the fast whitespace rule for Latin.
+    fun previousWordStart(text: String, thai: Boolean = false): Int {
         var end = text.length
         while (end > 0 && text[end - 1].isWhitespace()) end--
+        if (end == 0) return 0
+        if (thai) {
+            val iterator = BreakIterator.getWordInstance(thaiLocale)
+            iterator.setText(text)
+            val boundary = iterator.preceding(end)
+            if (boundary != BreakIterator.DONE && boundary < end) return boundary
+        }
         while (end > 0 && !text[end - 1].isWhitespace()) end--
         return end
     }

@@ -27,4 +27,16 @@ class TextDeletionTest {
         assertEquals(0, TextDeletion.previousWordStart("hello "))
         assertEquals(0, TextDeletion.previousWordStart("hello"))
     }
+
+    @Test
+    fun thaiWordDeletionUsesIcuBoundaryNotWholeSentence() {
+        // Thai has no spaces: a swipe must delete one word, not the entire sentence.
+        val before = "ฉันกินข้าว"
+        val start = TextDeletion.previousWordStart(before, thai = true)
+        org.junit.Assert.assertTrue(
+            "expected a word boundary before the end, got $start",
+            start > 0 && start < before.length
+        )
+        assertEquals(6, TextDeletion.previousWordStart("hello world", thai = false))
+    }
 }

@@ -22,7 +22,9 @@ import org.robolectric.annotation.GraphicsMode
 class KeyboardRenderTest {
 
     private val width = 1080
-    private val height = 640
+    // 640 keeps the original compact previews. 735 makes the keyboard view exactly the 678px
+    // Gboard reference block tall, so the rendered keys are the proportions seen on a real phone.
+    private val renderSizes = listOf(640 to "", 735 to "_realistic")
     private val outDir = File("build/render").apply { mkdirs() }
 
     @Test
@@ -45,11 +47,12 @@ class KeyboardRenderTest {
         service.setField("keyboardView", view)
         val rebuild = canvasClass.getDeclaredMethod("rebuild").apply { isAccessible = true }
 
+        // Measured per render size below; assign an initial size so setup is valid.
         view.measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
+            View.MeasureSpec.makeMeasureSpec(renderSizes.first().first, View.MeasureSpec.EXACTLY)
         )
-        view.layout(0, 0, width, height)
+        view.layout(0, 0, width, renderSizes.first().first)
 
         val language = Class.forName("com.tulipskun.droidime.DroidImeService\$Language")
         val fieldKind = Class.forName("com.tulipskun.droidime.DroidImeService\$FieldKind")
@@ -81,6 +84,21 @@ class KeyboardRenderTest {
             State("text_editing", "ENGLISH", false, false, 0, false, editor = true)
         )
 
+        fun renderAndWrite(name: String, h: Int, suffix: String) {
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
+            )
+            view.layout(0, 0, width, h)
+            rebuild.invoke(view)
+            val bmp = Bitmap.createBitmap(width, h, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bmp))
+            val pixels = IntArray(width * h)
+            bmp.getPixels(pixels, 0, width, 0, 0, width, h)
+            org.junit.Assert.assertTrue("$name rendered blank", pixels.toHashSet().size > 8)
+            writePng(File(outDir, "${name}${suffix}.png"), width, h, pixels)
+        }
+
         for (s in states) {
             service.setField("language", enumOf(language, s.lang))
             service.setField("fieldKind", enumOf(fieldKind, "TEXT"))
@@ -105,20 +123,7 @@ class KeyboardRenderTest {
             service.setField("clipSelection", null)
             service.setField("clipEdit", s.clipEdit)
 
-            rebuild.invoke(view)
-
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            view.draw(Canvas(bmp))
-
-            val pixels = IntArray(width * height)
-            bmp.getPixels(pixels, 0, width, 0, 0, width, height)
-            // A blank keyboard (the zero-height bug) renders as one flat colour.
-            val distinct = pixels.toHashSet().size
-            org.junit.Assert.assertTrue(
-                "${s.file} rendered blank ($distinct distinct colours)",
-                distinct > 8
-            )
-            writePng(File(outDir, "${s.file}.png"), width, height, pixels)
+            renderSizes.forEach { (h, suffix) -> renderAndWrite(s.file, h, suffix) }
         }
 
         val emojiCategory = Class.forName("com.tulipskun.droidime.DroidImeService\$EmojiCategory")
@@ -127,14 +132,8 @@ class KeyboardRenderTest {
         service.setField("emojiPanelVisible", true)
         for (category in emojiCategory.enumConstants!!) {
             service.setField("emojiCategory", category)
-            rebuild.invoke(view)
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            view.draw(Canvas(bmp))
-            val pixels = IntArray(width * height)
-            bmp.getPixels(pixels, 0, width, 0, 0, width, height)
-            val distinct = pixels.toHashSet().size
-            org.junit.Assert.assertTrue("emoji ${(category as Enum<*>).name} rendered blank", distinct > 8)
-            writePng(File(outDir, "emoji_${(category as Enum<*>).name.lowercase()}.png"), width, height, pixels)
+            val name = "emoji_${(category as Enum<*>).name.lowercase()}"
+            renderSizes.forEach { (h, suffix) -> renderAndWrite(name, h, suffix) }
         }
     }
 
