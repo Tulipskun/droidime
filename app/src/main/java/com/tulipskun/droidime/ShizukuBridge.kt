@@ -140,9 +140,10 @@ class ShizukuBridge(
                     )
                 }
 
+                // waitFor() returns the exit code directly; exitValue() can throw
+                // "process hasn't exited" on Shizuku's process wrapper even after waitFor().
                 val exitCode = try {
                     process.waitFor()
-                    process.exitValue()
                 } catch (error: Throwable) {
                     throw IllegalStateException(
                         error.message ?: "Unable to get Shizuku process exit code",

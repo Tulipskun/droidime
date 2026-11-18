@@ -43,9 +43,13 @@ internal object ShizukuShell {
         val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
         if (!finished) {
             process.destroy()
+            reader.join(2_000L)
             throw IllegalStateException("Shizuku command timed out")
         }
         reader.join(2_000L)
-        return Result(process.exitValue(), output.toString(Charsets.UTF_8.name()).trim())
+        // Shizuku's Process wrapper can report "process hasn't exited" from exitValue() even
+        // after waitFor() succeeded. waitFor() itself always returns the real exit code.
+        val exitCode = process.waitFor()
+        return Result(exitCode, output.toString(Charsets.UTF_8.name()).trim())
     }
 }
