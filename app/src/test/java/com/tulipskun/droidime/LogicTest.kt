@@ -289,6 +289,13 @@ class LogicTest {
         assertTrue((getField(english, "words") as Array<*>).size >= 65000)
         assertTrue((getField(thai, "words") as Array<*>).size >= 54000)
     }
+    @Test fun repeatedKeyTouchesStayInMemoryWithoutRewritingPreferences() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        repeat(11) { call(service, "recordKeyTouch", 20f, 30f, 100, 100, null) }
+        val events = call(service, "touchHistory") as List<*>
+        assertEquals(11, events.size)
+    }
+
     @Test fun deviceEndpointNormalizesDeviceNames() {
         assertEquals("pixel-8-pro", DeviceEndpoint.normalize(" Pixel 8 Pro "))
         assertEquals("android-device", DeviceEndpoint.normalize("---" ).ifBlank { "android-device" })

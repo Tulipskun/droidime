@@ -24,6 +24,9 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // cloudflared is downloaded on first tunnel start and published as a separate
+            // release asset; bundling all three ABIs made the APK 56 MB.
+            excludes += setOf("**/libcloudflared.so")
         }
     }
 

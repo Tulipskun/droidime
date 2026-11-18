@@ -30,7 +30,7 @@ DroidIME includes the Android control MCP server and provisions its own Cloudfla
 
 CF_TOKEN and the generated Tunnel Token are encrypted separately using Android Keystore. The API token is sent only to Cloudflare's API and is not embedded in the APK or sent to AIxodia Engine. Re-running provisioning reuses the existing tunnel for the same device name; changing the device name creates a separate tunnel and leaves the previous tunnel untouched.
 
-The cloudflared ARM64 runtime is fetched from a pinned Droid-MCP revision during GitHub Actions builds. Android 7.0 (API 24) or later is required.
+The cloudflared binaries for arm64-v8a, armeabi-v7a and x86_64 are built in CI and published as `cloudflared-binaries.zip` next to the APK. The app downloads the binary for the device on first tunnel start and verifies its SHA-256 against the manifest in that zip. Android 7.0 (API 24) or later is required.
 
 **Security:** Use a dedicated Cloudflare API Token with only the permissions above. The MCP endpoint has no built-in client login; gateway requests are protected by Cloudflare Access and the Worker injects its service-token credentials when proxying to the device origin.
 
@@ -53,7 +53,7 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`
 
 ## Release
 
-Pushes to `main` build a signed APK and replace the single `latest` GitHub release. The signing key is fetched from the private `droidime-key` repository, and `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` must be set as repository secrets. Pull requests only build a debug APK.
+Pushes to `main` build a signed APK plus `cloudflared-binaries.zip` and replace the single `latest` GitHub release. The signing key is fetched from the private `droidime-key` repository, and `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` must be set as repository secrets. Pull requests only build a debug APK.
 
 ## Credits
 

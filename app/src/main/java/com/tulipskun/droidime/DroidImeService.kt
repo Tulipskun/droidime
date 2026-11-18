@@ -325,6 +325,13 @@ class DroidImeService : InputMethodService() {
     private var spaceDragStartCursor = -1
     private var spaceDragLastCursor = -1
     private var lastTouchEventAt = 0L
+    // Touch history is kept in memory and written with a debounce. Re-reading and re-parsing up
+    // to 3,000 JSON events on every key press made typing progressively slower.
+    private val touchEventCache = ArrayList<JSONObject>()
+    private var touchEventsLoaded = false
+    private val touchSaveHandler = Handler(Looper.getMainLooper())
+    private var touchSaveScheduled = false
+    private val touchSaveRunnable = Runnable { flushTouchHistory() }
 
     private val thaiRows = listOf(
         listOf("ๅ", "/", "_", "ภ", "ถ", "ุ", "ึ", "ค", "ต", "จ", "ข", "ช"),
@@ -424,6 +431,7 @@ class DroidImeService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        flushTouchHistory()
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         stopDeleteRepeat()
         setClipboardListening(false)
@@ -622,6 +630,7 @@ class DroidImeService : InputMethodService() {
         learnTrailingWord()
         finishThaiComposition()
         setClipboardListening(false)
+        flushTouchHistory()
         super.onFinishInputView(finishingInput)
     }
 
@@ -1510,10 +1519,28 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun touchHistory(): MutableList<JSONObject> {
-        val raw = preferences.getString(TOUCH_HISTORY, "").orEmpty()
-        return raw.lineSequence().mapNotNull {
-            try { JSONObject(it) } catch (_: Exception) { null }
-        }.toMutableList()
+        if (!touchEventsLoaded) {
+            touchEventsLoaded = true
+            preferences.getString(TOUCH_HISTORY, "").orEmpty().lineSequence().forEach { line ->
+                try { touchEventCache.add(JSONObject(line)) } catch (_: Exception) { }
+            }
+        }
+        return touchEventCache
+    }
+
+    private fun scheduleTouchSave() {
+        if (touchSaveScheduled) return
+        touchSaveScheduled = true
+        touchSaveHandler.postDelayed(touchSaveRunnable, TOUCH_SAVE_DELAY_MS)
+    }
+
+    private fun flushTouchHistory() {
+        touchSaveScheduled = false
+        touchSaveHandler.removeCallbacks(touchSaveRunnable)
+        if (!touchEventsLoaded) return
+        preferences.edit()
+            .putString(TOUCH_HISTORY, touchEventCache.joinToString("\n") { it.toString() })
+            .apply()
     }
 
     private fun saveTouchEvent(event: JSONObject) = saveTouchEvents(listOf(event))
@@ -1524,7 +1551,7 @@ class DroidImeService : InputMethodService() {
         val events = touchHistory()
         events.addAll(newEvents)
         while (events.size > 3000) events.removeAt(0)
-        preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
+        scheduleTouchSave()
         lastTouchEventAt = SystemClock.elapsedRealtime()
     }
 
@@ -1561,7 +1588,7 @@ class DroidImeService : InputMethodService() {
         } else if (keyIndex >= 0) {
             events[keyIndex].put("corrected", true)
         }
-        preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
+        scheduleTouchSave()
     }
 
     private fun recordGlidePath(points: List<Pair<Float, Float>>, viewWidth: Int, viewHeight: Int, rejected: Boolean) {
@@ -1586,7 +1613,7 @@ class DroidImeService : InputMethodService() {
         val gestureTime = events[lastIndex].optLong("time")
         events.filter { it.optString("type") == "glide_point" && it.optLong("time") == gestureTime }
             .forEach { it.put("rejected", true) }
-        preferences.edit().putString(TOUCH_HISTORY, events.joinToString("\n") { it.toString() }).apply()
+        scheduleTouchSave()
     }
 
     // Two quick spaces after a word become ". " (English only).
@@ -3504,5 +3531,6 @@ class DroidImeService : InputMethodService() {
         private const val DELETE_ACCEL_STEP = 3
         private const val DELETE_MIN_MS = 15
         private const val DELETE_SWIPE_DP = 40f
+        private const val TOUCH_SAVE_DELAY_MS = 1000L
     }
 }

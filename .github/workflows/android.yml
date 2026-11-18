@@ -94,6 +94,18 @@ jobs:
           test -f app/src/main/jniLibs/armeabi-v7a/libcloudflared.so
           test -f app/src/main/jniLibs/x86_64/libcloudflared.so
           test "$(find app/src/main/jniLibs -name libcloudflared.so | wc -l)" -eq 3
+      - name: Package cloudflared binaries for on-demand download
+        run: |
+          set -euxo pipefail
+          mkdir -p cloudflared-dist/lib
+          cp -r app/src/main/jniLibs/* cloudflared-dist/lib/
+          (
+            cd cloudflared-dist
+            find lib -name libcloudflared.so | sort | while read -r f; do
+              sha256sum "$f"
+            done > checksums.sha256
+            zip -r ../cloudflared-binaries.zip checksums.sha256 lib
+          )
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -147,11 +159,11 @@ jobs:
           if gh release view latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release delete latest --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
           fi
-          gh release create latest DroidIME.apk \
+          gh release create latest DroidIME.apk cloudflared-binaries.zip \
             --repo "${GITHUB_REPOSITORY}" \
             --title "DroidIME ${VERSION_NAME}" \
-            --notes "DroidIME ${VERSION_NAME} (versionCode=${VERSION_CODE})"
-          rm -f DroidIME.apk
+            --notes "DroidIME ${VERSION_NAME} (versionCode=${VERSION_CODE}). cloudflared is downloaded on first tunnel start."
+          rm -f DroidIME.apk cloudflared-binaries.zip
       - name: Remove signing key
         if: always() && github.event_name != 'pull_request'
         run: |
