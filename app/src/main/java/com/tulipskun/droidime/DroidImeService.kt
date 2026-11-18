@@ -1326,20 +1326,17 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
-        fun action(label: String, accent: Boolean = false) = Cell(
-            label, if (accent) KeyStyle.SPECIAL else KeyStyle.CLIP, null,
-            action = { editorAction(label) }
-        )
+        fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
         val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
-        val topAction = if (hasSelection) action("Cut", true) else action("Select all", true)
+        val topAction = if (hasSelection) action("Cut") else action("Select all")
         // Gboard's text-editing panel: tall arrow keys, a select/copy column and Home/End/Delete.
         return listOf(
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
             listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
-            listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy", true)),
-            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste", true)),
-            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete", true))
+            listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
+            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
+            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete"))
         )
     }
 
@@ -1887,6 +1884,9 @@ class DroidImeService : InputMethodService() {
         private val pressHandler = Handler(Looper.getMainLooper())
         private var longPressFired = false
         private var spaceDragMoved = false
+        private var clipSwipeStartX = 0f
+        private var clipSwipeCell: Cell? = null
+        private var clipSwipeHandled = false
         private var glideStartCell: Cell? = null
         private var glideActive = false
         private var glideLength = 0f
@@ -1999,10 +1999,10 @@ class DroidImeService : InputMethodService() {
             fun tool(icon: ToolIcon, name: String): Cell =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
             val middle: List<Cell> = if (suggestions.isEmpty() && undoText == null) {
-                // Gboard's toolbar: grid, G, GIF, clipboard, settings and the expand arrow.
+                // Gboard's toolbar on this device: grid, undo, translate, clipboard, settings, expand.
                 listOf(
+                    tool(ToolIcon.UNDO, "Undo").withAction { sendCtrl(KeyEvent.KEYCODE_Z) },
                     tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
-                    tool(ToolIcon.GIF, "GIF").withAction { showEmoji() },
                     tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() },
                     tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() }
                 )
@@ -2051,13 +2051,20 @@ class DroidImeService : InputMethodService() {
                 rows.add(listOf(1f to emptyCell()))
                 return rows
             }
-            if (pinned.isNotEmpty()) {
-                rows.add(listOf(1f to sectionCell("PINNED")))
-                pinned.forEach { clip -> rows.add(listOf(1f to clipCell(clip.id))) }
-            }
+            // Gboard lays clip cards out two per row.
             if (recent.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("RECENT")))
-                recent.forEach { clip -> rows.add(listOf(1f to clipCell(clip.id))) }
+                recent.chunked(2).forEach { group ->
+                    rows.add(group.map { clip -> 1f to clipCell(clip.id) } +
+                        List(2 - group.size) { 1f to null })
+                }
+            }
+            if (pinned.isNotEmpty()) {
+                rows.add(listOf(1f to sectionCell("PINNED")))
+                pinned.chunked(2).forEach { group ->
+                    rows.add(group.map { clip -> 1f to clipCell(clip.id) } +
+                        List(2 - group.size) { 1f to null })
+                }
             }
             return rows
         }
@@ -2932,7 +2939,7 @@ class DroidImeService : InputMethodService() {
                     cell.rect.left.toInt(), (cell.rect.top + dpf(2f)).toInt(),
                     cell.rect.right.toInt(), (cell.rect.bottom - dpf(2f)).toInt()
                 )
-                shape.cornerRadius = dpf(14f)
+                shape.cornerRadius = dpf(9f)
                 shape.draw(canvas)
             }
             if (emptyClip) {
@@ -3020,6 +3027,10 @@ class DroidImeService : InputMethodService() {
             textPaint.color = if (cell.style == KeyStyle.SPECIAL) colors.enterText else ink
             textPaint.typeface = Typeface.DEFAULT
             if (editorPanelVisible) {
+                val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
+                if (!hasSelection && cell.label in setOf("Select", "Select all", "Copy")) {
+                    textPaint.color = colors.hint
+                }
                 val display = when (cell.label) {
                     "Home" -> "|‹"
                     "End" -> "›|"
@@ -3093,6 +3104,7 @@ class DroidImeService : InputMethodService() {
             iconStroke.strokeWidth = (s * 0.16f).coerceAtLeast(1.6f * resources.displayMetrics.density)
             iconFill.color = color
             when (cell.icon) {
+                ToolIcon.GIF -> { }
                 ToolIcon.GRID -> {
                     val off = s * 0.52f
                     val side = s * 0.34f
@@ -3113,23 +3125,14 @@ class DroidImeService : InputMethodService() {
                     canvas.drawLine(headX, headY, headX + s * 0.1f, headY + s * 0.36f, iconStroke)
                 }
                 ToolIcon.TRANSLATE -> {
-                    // Gboard's second toolbar icon is the multicolour "G".
-                    textPaint.color = Color.rgb(66, 133, 244)
-                    textPaint.typeface = mediumFace
-                    textPaint.textSize = s * 1.7f
-                    textPaint.textAlign = Paint.Align.CENTER
-                    val m = textPaint.fontMetrics
-                    canvas.drawText("G", cx, cy - (m.ascent + m.descent) / 2f, textPaint)
-                    textPaint.typeface = Typeface.DEFAULT
-                }
-                ToolIcon.GIF -> {
-                    textPaint.color = color
-                    textPaint.typeface = mediumFace
-                    textPaint.textSize = s * 0.72f
-                    textPaint.textAlign = Paint.Align.CENTER
-                    val m = textPaint.fontMetrics
-                    canvas.drawText("GIF", cx, cy - (m.ascent + m.descent) / 2f, textPaint)
-                    textPaint.typeface = Typeface.DEFAULT
+                    val top = cy - s * 0.5f
+                    canvas.drawLine(cx - s * 0.5f, cy + s * 0.1f, cx - s * 0.1f, top, iconStroke)
+                    canvas.drawLine(cx - s * 0.1f, top, cx + s * 0.3f, cy + s * 0.1f, iconStroke)
+                    canvas.drawLine(cx - s * 0.36f, cy - s * 0.12f, cx + s * 0.16f, cy - s * 0.12f, iconStroke)
+                    canvas.drawLine(cx + s * 0.32f, cy - s * 0.5f, cx + s * 0.72f, cy - s * 0.5f, iconStroke)
+                    canvas.drawLine(cx + s * 0.52f, cy - s * 0.5f, cx + s * 0.52f, cy + s * 0.1f, iconStroke)
+                    canvas.drawLine(cx + s * 0.2f, cy + s * 0.1f, cx + s * 0.84f, cy + s * 0.55f, iconStroke)
+                    canvas.drawLine(cx + s * 0.84f, cy + s * 0.1f, cx + s * 0.2f, cy + s * 0.55f, iconStroke)
                 }
                 ToolIcon.CLIPBOARD -> {
                     val l = cx - s * 0.52f
@@ -3250,6 +3253,9 @@ class DroidImeService : InputMethodService() {
                     spaceDragMoved = false
                     deleteStartX = event.x
                     deleteSwipeHandled = false
+                    clipSwipeStartX = event.x
+                    clipSwipeCell = if (clipOpen()) cell else null
+                    clipSwipeHandled = false
                     if (cell?.style == KeyStyle.SPACE && !panelOpen()) {
                         val extracted = currentInputConnection?.getExtractedText(ExtractedTextRequest(), 0)
                         if (extracted != null && extracted.selectionStart >= 0) {
@@ -3322,6 +3328,12 @@ class DroidImeService : InputMethodService() {
                     }
                     if (panelOpen()) {
                         val cell = cellAt(event.x, event.y)
+                        if (clipSwipeCell != null &&
+                            kotlin.math.abs(event.x - clipSwipeStartX) > dpf(60f)
+                        ) {
+                            clipSwipeHandled = true
+                            cancelPendingLongPress()
+                        }
                         if (cell !== pressed) {
                             pressed = cell
                             cancelPendingLongPress()
@@ -3370,6 +3382,15 @@ class DroidImeService : InputMethodService() {
                         // action must not fire afterwards.
                         cancelPendingLongPress()
                         invalidate()
+                        if (clipSwipeHandled && clipSwipeCell?.clipId != null) {
+                            deleteClip(clipSwipeCell!!.clipId!!)
+                            clipSwipeCell = null
+                            clipSwipeHandled = false
+                            longPressFired = false
+                            return true
+                        }
+                        clipSwipeCell = null
+                        clipSwipeHandled = false
                         if (cell != null && cell.style != KeyStyle.SECTION && !longPressFired &&
                             cellAt(event.x, event.y) === cell
                         ) {
@@ -3432,6 +3453,8 @@ class DroidImeService : InputMethodService() {
                     spaceDragStartCursor = -1
                     spaceDragMoved = false
                     deleteSwipeHandled = false
+                    clipSwipeCell = null
+                    clipSwipeHandled = false
                     glideX.clear()
                     glideY.clear()
                     cancelPendingLongPress()
