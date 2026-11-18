@@ -1326,9 +1326,12 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
-        fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
+        fun action(label: String, accent: Boolean = false) = Cell(
+            label, if (accent) KeyStyle.SPECIAL else KeyStyle.CLIP, null,
+            action = { editorAction(label) }
+        )
         val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
-        val topAction = if (hasSelection) action("Cut") else action("Select all")
+        val topAction = if (hasSelection) action("Cut", true) else action("Select all", true)
         // Gboard's text-editing panel: tall arrow keys, a select/copy column and Home/End/Delete.
         return listOf(
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
@@ -1336,7 +1339,7 @@ class DroidImeService : InputMethodService() {
             listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
             listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
             listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
-            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete"))
+            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete", true))
         )
     }
 
@@ -2252,7 +2255,11 @@ class DroidImeService : InputMethodService() {
                         longAction = { showKeyboardPicker() },
                         action = { switchLanguage() }))
                 }
-                slots.add(4f to Cell(spaceLabel, KeyStyle.SPACE, null, action = { typeSpace() }))
+                slots.add(4f to Cell(
+                    spaceLabel, KeyStyle.SPACE, null,
+                    action = { typeSpace() },
+                    longAction = { switchLanguage() }
+                ))
                 slots.add(1f to Cell(rightSide, KeyStyle.SPECIAL, null, action = { typeText(rightSide) }))
                 slots.add(1.5f to enterCell())
             }
@@ -2844,6 +2851,8 @@ class DroidImeService : InputMethodService() {
             if (cell.style == KeyStyle.HEADER_CLOSE) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
+                iconFill.color = colors.special
+                canvas.drawCircle(cx, cy, minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
                 iconStroke.color = ink
                 iconStroke.strokeWidth = dpf(2.5f)
                 iconStroke.strokeCap = Paint.Cap.ROUND
@@ -2866,7 +2875,7 @@ class DroidImeService : InputMethodService() {
                 // Gboard keeps the panel title beside the back arrow and the action on the right.
                 textPaint.color = ink
                 textPaint.typeface = mediumFace
-                textPaint.textSize = dpf(16f)
+                textPaint.textSize = dpf(20f)
                 val m = textPaint.fontMetrics
                 val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
                 val title = if (editorPanelVisible) "Text editing" else cell.label
@@ -2878,6 +2887,9 @@ class DroidImeService : InputMethodService() {
             }
             if (clipPanelVisible && cell.label == "Toggle") {
                 val on = preferences.getBoolean("clipboard", true)
+                iconFill.color = colors.special
+                canvas.drawCircle(cell.rect.centerX(), cell.rect.centerY(),
+                    minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
                 val sw = dpf(34f)
                 val sh = dpf(18f)
                 val x = cell.rect.centerX() - sw / 2f
@@ -2896,6 +2908,8 @@ class DroidImeService : InputMethodService() {
             if (clipPanelVisible && cell.label in setOf("Edit", "Done", "Delete")) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
+                iconFill.color = colors.special
+                canvas.drawCircle(cx, cy, minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
                 iconStroke.color = ink
                 iconStroke.strokeWidth = dpf(2f)
                 iconStroke.strokeCap = Paint.Cap.ROUND
@@ -2905,35 +2919,44 @@ class DroidImeService : InputMethodService() {
                 iconStroke.strokeCap = Paint.Cap.BUTT
                 return
             }
+            val emptyClip = !editorPanelVisible && cell.clipId == null
             val selected = cell.clipId != null && clipSelection == cell.clipId
-            shape.setColor(if (cell === pressed) colors.special else colors.key)
-            shape.setBounds(
-                cell.rect.left.toInt(), (cell.rect.top + dpf(2f)).toInt(),
-                cell.rect.right.toInt(), (cell.rect.bottom - dpf(2f)).toInt()
-            )
-            shape.cornerRadius = dpf(14f)
-            shape.draw(canvas)
-            if (!editorPanelVisible && cell.clipId == null) {
-                // Gboard's empty clipboard: an outlined clipboard icon above a short explanation.
+            if (!emptyClip) {
+                shape.setColor(when {
+                    cell === pressed -> colors.active
+                    cell.style == KeyStyle.SPECIAL -> colors.special
+                    else -> colors.key
+                })
+                shape.setBounds(
+                    cell.rect.left.toInt(), (cell.rect.top + dpf(2f)).toInt(),
+                    cell.rect.right.toInt(), (cell.rect.bottom - dpf(2f)).toInt()
+                )
+                shape.cornerRadius = dpf(14f)
+                shape.draw(canvas)
+            }
+            if (emptyClip) {
+                // Gboard's empty clipboard sits directly on the panel background, no card.
                 val cx = cell.rect.centerX()
-                val iconTop = cell.rect.top + dpf(22f)
+                val cy = cell.rect.centerY()
+                val iconTop = cy - dpf(46f)
                 iconStroke.color = colors.hint
-                iconStroke.strokeWidth = dpf(2f)
-                canvas.drawRoundRect(cx - dpf(15f), iconTop, cx + dpf(15f), iconTop + dpf(34f),
-                    dpf(4f), dpf(4f), iconStroke)
-                canvas.drawRoundRect(cx - dpf(7f), iconTop - dpf(4f), cx + dpf(7f), iconTop + dpf(6f),
-                    dpf(3f), dpf(3f), iconFill.apply { color = colors.hint })
-                canvas.drawLine(cx - dpf(8f), iconTop + dpf(14f), cx + dpf(8f), iconTop + dpf(14f), iconStroke)
-                canvas.drawLine(cx - dpf(8f), iconTop + dpf(21f), cx + dpf(5f), iconTop + dpf(21f), iconStroke)
+                iconFill.color = colors.hint
+                iconStroke.strokeWidth = dpf(3f)
+                canvas.drawRoundRect(cx - dpf(21f), iconTop, cx + dpf(21f), iconTop + dpf(46f),
+                    dpf(5f), dpf(5f), iconStroke)
+                canvas.drawRoundRect(cx - dpf(10f), iconTop - dpf(6f), cx + dpf(10f), iconTop + dpf(8f),
+                    dpf(4f), dpf(4f), iconFill)
+                canvas.drawLine(cx - dpf(11f), iconTop + dpf(20f), cx + dpf(11f), iconTop + dpf(20f), iconStroke)
+                canvas.drawLine(cx - dpf(11f), iconTop + dpf(30f), cx + dpf(7f), iconTop + dpf(30f), iconStroke)
                 val m = textPaint.fontMetrics
                 textPaint.color = ink
-                textPaint.textSize = dpf(15f)
+                textPaint.textSize = dpf(19f)
                 canvas.drawText(cell.label, cx,
-                    cell.rect.centerY() + dpf(24f) - (m.ascent + m.descent) / 2f, textPaint)
+                    cy + dpf(30f) - (m.ascent + m.descent) / 2f, textPaint)
                 textPaint.color = colors.hint
-                textPaint.textSize = dpf(12f)
+                textPaint.textSize = dpf(14f)
                 canvas.drawText("Once you copy a piece of text, it will show up here.", cx,
-                    cell.rect.centerY() + dpf(44f) - (m.ascent + m.descent) / 2f, textPaint)
+                    cy + dpf(52f) - (m.ascent + m.descent) / 2f, textPaint)
                 return
             }
             if (editorPanelVisible && cell.label in setOf("←", "→", "↑", "↓")) {
@@ -2993,7 +3016,7 @@ class DroidImeService : InputMethodService() {
                 canvas.drawCircle(px, py - dpf(3f), dpf(3.2f), iconStroke)
                 canvas.drawLine(px, py, px, py + dpf(6f), iconStroke)
             }
-            textPaint.color = ink
+            textPaint.color = if (cell.style == KeyStyle.SPECIAL) colors.enterText else ink
             textPaint.typeface = Typeface.DEFAULT
             if (editorPanelVisible) {
                 val display = when (cell.label) {
@@ -3287,6 +3310,7 @@ class DroidImeService : InputMethodService() {
                             if (target != spaceDragLastCursor && currentInputConnection?.setSelection(target, target) == true) {
                                 spaceDragLastCursor = target
                                 spaceDragMoved = true
+                                cancelPendingLongPress()
                                 saveTouchEvent(JSONObject().put("type", "cursor_drag").put("time", System.currentTimeMillis())
                                     .put("x", event.x / width.coerceAtLeast(1)).put("y", event.y / height.coerceAtLeast(1))
                                     .put("cursor", target))
