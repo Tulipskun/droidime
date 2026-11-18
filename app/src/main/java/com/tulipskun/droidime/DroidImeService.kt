@@ -306,6 +306,12 @@ class DroidImeService : InputMethodService() {
     private var language = Language.THAI
     private var fieldKind = FieldKind.TEXT
     private var shifted = false
+    // True only when the user tapped Shift, not when auto-caps turned it on. Shift+Space switches
+    // language, but auto-capitalisation must not do that on the first space of a sentence.
+    private var shiftManual = false
+    private var undoText: String? = null
+    private var suggestionPage = 0
+    private val suppressedWords = HashSet<String>()
     private var shiftLocked = false
     private var lastShiftTap = 0L
     private var lastSpaceTap = 0L
@@ -421,6 +427,10 @@ class DroidImeService : InputMethodService() {
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
         loadUserWords()
         loadWordTransitions()
+        suppressedWords.addAll(
+            preferences.getString(SUPPRESSED_WORDS, "").orEmpty()
+                .lineSequence().filter { it.isNotBlank() }
+        )
         loadClips()
         loadRecentEmojis()
         Thread {
@@ -619,7 +629,10 @@ class DroidImeService : InputMethodService() {
                 language = Language.ENGLISH
             }
         }
-        if (!shiftLocked) shifted = computeAutoShift()
+        if (!shiftLocked) {
+            shifted = computeAutoShift()
+            shiftManual = false
+        }
         renderKeyboard()
     }
 
@@ -703,7 +716,7 @@ class DroidImeService : InputMethodService() {
 
     private fun renderKeyboard() {
         refreshTheme()
-        suggestions = computeSuggestions()
+        suggestions = computeSuggestions().filterNot { it.text in suppressedWords }
         keyboardView?.rebuild()
     }
 
@@ -722,8 +735,17 @@ class DroidImeService : InputMethodService() {
         if (editorPanelVisible) keyboardView?.rebuild()
     }
 
+    // Gboard exposes four auto-correction strengths. Penalty only changes how strongly a
+    // one-edit correction is ranked; "off" pushes corrections below every dictionary candidate.
+    private fun editPenalty(): Int = when (preferences.getString(AUTO_CORRECT_KEY, "moderate")) {
+        "off" -> Int.MAX_VALUE / 4
+        "conservative" -> EDIT_PENALTY * 4
+        "aggressive" -> 1
+        else -> EDIT_PENALTY
+    }
+
     private fun updateSuggestions() {
-        val next = computeSuggestions()
+        val next = computeSuggestions().filterNot { it.text in suppressedWords }
         if (next != suggestions) {
             suggestions = next
             keyboardView?.rebuild()
@@ -764,7 +786,7 @@ class DroidImeService : InputMethodService() {
             dictEn,
             wordTransitions,
             userWords,
-            EDIT_PENALTY
+            editPenalty()
         )
         val lowerTyped = typed.lowercase()
         val typedKnown = (dictEn?.indexOf(lowerTyped) ?: -1) >= 0 || userWords.containsKey(lowerTyped)
@@ -1056,6 +1078,7 @@ class DroidImeService : InputMethodService() {
 
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
+        undoText = null
         val context = connection.getTextBeforeCursor(64, 0)?.toString()?.let { NextWordModel.context(it) }
         finishThaiComposition()
         if (glideCommitted != null) {
@@ -1368,6 +1391,7 @@ class DroidImeService : InputMethodService() {
             else -> shifted = !shifted
         }
         lastShiftTap = now
+        shiftManual = shifted
         renderKeyboard()
     }
 
@@ -1384,6 +1408,7 @@ class DroidImeService : InputMethodService() {
         numberPad = false
         shiftLocked = false
         shifted = computeAutoShift()
+        shiftManual = false
         renderKeyboard()
     }
 
@@ -1472,6 +1497,7 @@ class DroidImeService : InputMethodService() {
             val next = computeAutoShift()
             if (next != shifted) {
                 shifted = next
+                shiftManual = false
                 renderKeyboard()
                 return
             }
@@ -1502,6 +1528,7 @@ class DroidImeService : InputMethodService() {
 
     private fun typeText(value: String) {
         val connection = currentInputConnection
+        undoText = null
         if (connection != null) {
             if (language == Language.THAI && isThaiText(value)) {
                 if (thaiComposingText.isNotEmpty()) {
@@ -1619,6 +1646,15 @@ class DroidImeService : InputMethodService() {
     // Two quick spaces after a word become ". " (English only).
     private fun typeSpace() {
         val connection = currentInputConnection ?: return
+        if (shiftManual && shifted && !shiftLocked && enabledLanguages().size > 1) {
+            // Gboard: Shift+Space switches between enabled keyboards. Auto-caps never does this.
+            shiftManual = false
+            shifted = false
+            undoText = null
+            switchLanguage()
+            return
+        }
+        undoText = null
         if (symbols) {
             // Like Gboard, a space typed on a symbol page drops back to the letters.
             symbols = false
@@ -1657,6 +1693,7 @@ class DroidImeService : InputMethodService() {
         glideAlternatives = emptyList()
         val selection = connection.getSelectedText(0)
         if (!selection.isNullOrEmpty()) {
+            undoText = selection.toString()
             connection.commitText("", 1)
             afterTextChanged()
             return
@@ -1664,6 +1701,7 @@ class DroidImeService : InputMethodService() {
         val before = connection.getTextBeforeCursor(512, 0)?.toString().orEmpty()
         val start = TextDeletion.previousWordStart(before)
         if (start < before.length) {
+            undoText = before.substring(start)
             connection.deleteSurroundingText(before.length - start, 0)
             afterTextChanged()
         }
@@ -1679,6 +1717,7 @@ class DroidImeService : InputMethodService() {
         ) {
             val start = TextDeletion.previousClusterStart(composing)
             val remaining = composing.substring(0, start)
+            undoText = composing.substring(start)
             if (remaining.isEmpty()) connection.commitText("", 1)
             else connection.setComposingText(remaining, 1)
             thaiComposingText = remaining
@@ -1691,6 +1730,7 @@ class DroidImeService : InputMethodService() {
         finishThaiComposition()
         val tail = glideCommitted
         if (tail != null && connection.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
+            undoText = tail
             connection.deleteSurroundingText(tail.length, 0)
             glideCommitted = null
             glideAlternatives = emptyList()
@@ -1701,15 +1741,43 @@ class DroidImeService : InputMethodService() {
         glideAlternatives = emptyList()
         val selection = connection.getSelectedText(0)
         if (!selection.isNullOrEmpty()) {
+            undoText = selection.toString()
             connection.commitText("", 1)
         } else {
             val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
             val start = TextDeletion.previousClusterStart(before)
             if (start < before.length) {
+                undoText = before.substring(start)
                 connection.deleteSurroundingText(before.length - start, 0)
             }
         }
         if (updateShift) afterTextChanged()
+    }
+
+    private fun restoreUndo() {
+        val text = undoText ?: return
+        currentInputConnection?.commitText(text, 1)
+        undoText = null
+        afterTextChanged()
+    }
+
+    private fun rotateSuggestions(forward: Boolean) {
+        if (suggestions.size < 2) return
+        suggestions = if (forward) suggestions.drop(1) + suggestions.take(1)
+        else suggestions.takeLast(1) + suggestions.dropLast(1)
+        suggestionPage++
+        keyboardView?.rebuild()
+    }
+
+    private fun removeSuggestion(word: String) {
+        if (suppressedWords.add(word)) {
+            preferences.edit()
+                .putString(SUPPRESSED_WORDS, suppressedWords.joinToString("\n"))
+                .apply()
+        }
+        if (userWords.remove(word) != null) saveUserWords()
+        suggestions = suggestions.filterNot { it.text == word }
+        keyboardView?.rebuild()
     }
 
     private fun enterLabel(): String {
@@ -1928,7 +1996,7 @@ class DroidImeService : InputMethodService() {
         private fun stripCells(): List<Cell> {
             fun tool(icon: ToolIcon, name: String): Cell =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
-            val middle: List<Cell> = if (suggestions.isEmpty()) {
+            val middle: List<Cell> = if (suggestions.isEmpty() && undoText == null) {
                 listOf(
                     tool(ToolIcon.UNDO, "Undo").withAction { sendCtrl(KeyEvent.KEYCODE_Z) },
                     tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
@@ -1936,14 +2004,24 @@ class DroidImeService : InputMethodService() {
                     tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() }
                 )
             } else {
-                List(3) { i ->
-                    val s = suggestions.getOrNull(i)
-                    if (s != null) {
-                        Cell(s.text, KeyStyle.SUGGESTION, null, action = { applySuggestion(s) })
+                val slots = List(3) { i ->
+                    if (i == 0 && undoText != null) {
+                        Cell("Undo", KeyStyle.SUGGESTION, null, action = { restoreUndo() })
                     } else {
-                        Cell("", KeyStyle.SUGGESTION, null, action = {})
+                        val s = suggestions.getOrNull(i)
+                        if (s != null) {
+                            Cell(s.text, KeyStyle.SUGGESTION, null,
+                                action = { applySuggestion(s) },
+                                longAction = { removeSuggestion(s.text) })
+                        } else {
+                            Cell("", KeyStyle.SUGGESTION, null, action = {})
+                        }
                     }
                 }
+                // Gboard-style paging: ‹ / › cycle through the available candidates.
+                listOf(Cell("‹", KeyStyle.SUGGESTION, null, action = { rotateSuggestions(false) })) +
+                    slots +
+                    listOf(Cell("›", KeyStyle.SUGGESTION, null, action = { rotateSuggestions(true) }))
             }
             // The cursor tool selects all on a tap and copies the selection on a long-press, which
             // is how a clip reaches the clipboard panel from the keyboard alone.
@@ -2127,7 +2205,10 @@ class DroidImeService : InputMethodService() {
                 slots.add(1.25f to Cell("ABC", KeyStyle.SPECIAL, null, pill = true, action = {
                     numberPad = false
                     symbols = false
-                    if (!shiftLocked) shifted = computeAutoShift()
+                    if (!shiftLocked) {
+                        shifted = computeAutoShift()
+                        shiftManual = false
+                    }
                     renderKeyboard()
                 }))
                 slots.add(2f to Cell("0", KeyStyle.NORMAL, null, action = { typeText("0") }))
@@ -2147,7 +2228,10 @@ class DroidImeService : InputMethodService() {
                 slots.add(1.5f to Cell(if (symbols) "ABC" else "?123", KeyStyle.SPECIAL, null, pill = true, action = {
                     symbols = !symbols
                     symbolPage = 0
-                    if (!shiftLocked) shifted = computeAutoShift()
+                    if (!shiftLocked) {
+                        shifted = computeAutoShift()
+                        shiftManual = false
+                    }
                     renderKeyboard()
                 }))
                 val emojiKey = leftSide == ","
@@ -3514,6 +3598,8 @@ class DroidImeService : InputMethodService() {
         )
 
         private const val USER_DICT = "user_dict"
+        private const val SUPPRESSED_WORDS = "suppressed_words"
+        private const val AUTO_CORRECT_KEY = "auto_correct_level"
         private const val NEXT_WORD_DICT = "next_word_model"
         private const val NEXT_WORDS_PER_PREVIOUS = 16
         private const val NEXT_WORD_PREVIOUS_LIMIT = 2000

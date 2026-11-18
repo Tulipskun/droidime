@@ -289,6 +289,35 @@ class LogicTest {
         assertTrue((getField(english, "words") as Array<*>).size >= 65000)
         assertTrue((getField(thai, "words") as Array<*>).size >= 54000)
     }
+    @Test fun deleteStoresUndoTextAndRestoresIt() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())
+        val connection = BaseInputConnection(editor, true)
+        setField(service, "mInputConnection", connection)
+        setField(service, "glideCommitted", null)
+        connection.commitText("hello", 1)
+
+        call(service, "deleteOne", false)
+        assertEquals("o", getField(service, "undoText"))
+        assertEquals("hell", connection.getTextBeforeCursor(20, 0).toString())
+
+        call(service, "restoreUndo")
+        assertEquals("hello", connection.getTextBeforeCursor(20, 0).toString())
+        assertNullValue(getField(service, "undoText"))
+    }
+
+    @Test fun removedSuggestionsAreSuppressed() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        call(service, "removeSuggestion", "hello")
+        @Suppress("UNCHECKED_CAST")
+        val suppressed = getField(service, "suppressedWords") as Set<String>
+        assertTrue(suppressed.contains("hello"))
+    }
+
+    private fun assertNullValue(value: Any?) {
+        org.junit.Assert.assertNull(value)
+    }
+
     @Test fun repeatedKeyTouchesStayInMemoryWithoutRewritingPreferences() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         repeat(11) { call(service, "recordKeyTouch", 20f, 30f, 100, 100, null) }

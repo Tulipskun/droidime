@@ -436,6 +436,28 @@ class MainActivity : Activity() {
         }
         themeCard.addView(themeGroup)
 
+        val autoCorrectCard = settingsSection()
+        autoCorrectCard.addView(sectionTitle("Auto-correction"))
+        val currentCorrection = preferences.getString("auto_correct_level", "moderate")
+        val correctionGroup = RadioGroup(this).apply { orientation = LinearLayout.VERTICAL }
+        listOf(
+            "off" to "Off", "conservative" to "Conservative",
+            "moderate" to "Moderate", "aggressive" to "Aggressive"
+        ).forEach { (value, name) ->
+            correctionGroup.addView(RadioButton(this).apply {
+                id = View.generateViewId()
+                text = name
+                textSize = 15f
+                tag = value
+                isChecked = value == currentCorrection
+            })
+        }
+        correctionGroup.setOnCheckedChangeListener { group, checkedId ->
+            val value = group.findViewById<RadioButton>(checkedId)?.tag as? String
+            if (value != null) preferences.edit().putString("auto_correct_level", value).apply()
+        }
+        autoCorrectCard.addView(correctionGroup)
+
         val feedbackCard = settingsSection()
         feedbackCard.addView(sectionTitle("Feedback"))
         feedbackCard.addView(prefSwitch("Vibrate on key press", "haptics", true))
@@ -595,6 +617,7 @@ class MainActivity : Activity() {
             addView(testCard, sectionParams())
             addView(sizeCard, sectionParams())
             addView(themeCard, sectionParams())
+            addView(autoCorrectCard, sectionParams())
             addView(typingCard, sectionParams())
             addView(feedbackCard, sectionParams())
             addView(dictionaryCard, sectionParams())
