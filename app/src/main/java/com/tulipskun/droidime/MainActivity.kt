@@ -123,6 +123,7 @@ class MainActivity : Activity() {
         }
         val keyboardContent = settingsPane()
         val mcpContent = settingsPane()
+        val appContent = settingsPane()
 
         val setupCard = card()
         setupCard.addView(sectionTitle("Keyboard setup"))
@@ -571,6 +572,10 @@ class MainActivity : Activity() {
             Destination(
                 "MCP", "Shizuku, device name, Cloudflare Tunnel and webhook",
                 "↗", mcpContent
+            ),
+            Destination(
+                "App", "Updates and diagnostics for DroidIME itself",
+                "ⓘ", appContent
             )
         )
         keyboardContent.apply {
@@ -583,10 +588,12 @@ class MainActivity : Activity() {
             addView(feedbackCard, sectionParams())
             addView(dictionaryCard, sectionParams())
             addView(learningCard, sectionParams())
+        }
+        mcpContent.addView(remoteCard, sectionParams())
+        appContent.apply {
             addView(updateCard, sectionParams())
             addView(logCard, sectionParams())
         }
-        mcpContent.addView(remoteCard, sectionParams())
 
         var onSelect: (Destination) -> Unit = {}
         val navRows = LinkedHashMap<String, View>()
