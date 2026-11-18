@@ -630,7 +630,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(horizontalPadding, dp(10), horizontalPadding, dp(24))
             addView(TextView(this@MainActivity).apply {
-                text = "DroidIME"
+                text = "Settings"
                 textSize = 30f
                 setTextColor(headingColor)
                 typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)

@@ -38,7 +38,12 @@ object TermuxCloudflaredInstaller {
 
         val abi = supportedAbi()
             ?: throw IllegalStateException("Unsupported Android ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
-        val target = File(File(context.filesDir, "cloudflared-bin"), LIBRARY_NAME)
+        // Staging lives in external app storage so the Shizuku shell can read it; the executable
+        // itself must live in /data/local/tmp because app data files are not executable.
+        val stagingDir = context.getExternalFilesDir(null)
+            ?: throw IllegalStateException("External app storage is unavailable")
+        val target = File(File(stagingDir, "cloudflared-bin"), LIBRARY_NAME)
+        val shellPath = "/data/local/tmp/droidime-cloudflared/$abi/$LIBRARY_NAME"
         val prefs = context.getSharedPreferences("droid_mcp", Context.MODE_PRIVATE)
         val cached = target.isFile && target.canRead() && target.length() > 1024 * 1024
         val savedVersion = prefs.getString(VERSION_KEY, null)
@@ -48,15 +53,13 @@ object TermuxCloudflaredInstaller {
         // both preferences, so the cached binary survives app updates unless cloudflared changed.
         val remoteVersion = readRemoteVersion()
         if (cached && remoteVersion != null && remoteVersion == savedVersion) {
-            setStatus(context, "Bundled cloudflared ready")
-            return target
+            return publish(target, shellPath, context)
         }
         if (cached && savedHash != null && sha256(target).equals(savedHash, ignoreCase = true)) {
             // Offline, or upgrading from a build that stored only the hash: keep the verified
             // copy and record its build id so later app updates do not download it again.
             prefs.edit().putString(VERSION_KEY, remoteVersion ?: savedVersion).apply()
-            setStatus(context, "Bundled cloudflared ready")
-            return target
+            return publish(target, shellPath, context)
         }
 
         val zip = download(context)
@@ -69,8 +72,25 @@ object TermuxCloudflaredInstaller {
         } finally {
             zip.delete()
         }
+        return publish(target, shellPath, context)
+    }
+
+    private fun publish(staging: File, shellPath: String, context: Context): File {
+        if (!ShizukuShell.available()) {
+            throw IllegalStateException("Shizuku authorization is required to start the tunnel")
+        }
+        val result = ShizukuShell.execute("test -x $shellPath")
+        if (result.exitCode != 0) {
+            val command = "mkdir -p ${ShizukuShell.quote(shellPath.substringBeforeLast('/'))} && " +
+                "cp ${ShizukuShell.quote(staging.absolutePath)} ${ShizukuShell.quote(shellPath)} && " +
+                "chmod 755 ${ShizukuShell.quote(shellPath)}"
+            val copy = ShizukuShell.execute(command)
+            if (copy.exitCode != 0) {
+                throw IllegalStateException("Could not install cloudflared: ${copy.output}")
+            }
+        }
         setStatus(context, "Bundled cloudflared ready")
-        return target
+        return File(shellPath)
     }
 
     private fun readRemoteVersion(): String? {

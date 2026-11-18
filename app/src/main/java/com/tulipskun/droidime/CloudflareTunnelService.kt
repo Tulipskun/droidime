@@ -72,7 +72,8 @@ class CloudflareTunnelService : Service() {
 
     private fun startTunnel(token: String, deviceName: String) {
         val binary = TermuxCloudflaredInstaller.ensureInstalled(this)
-        val home = File(filesDir, "cloudflared-home").apply { mkdirs() }
+        val shellHome = "/data/local/tmp/droidime-cloudflared/home"
+        val shellTmp = "/data/local/tmp/droidime-cloudflared/tmp"
         val edgeAddresses = resolveEdgeAddresses()
         Log.i(LOG_TAG, "Android DNS resolved Cloudflare edge addresses: ${edgeAddresses.joinToString()}")
         val command = mutableListOf(
@@ -88,11 +89,13 @@ class CloudflareTunnelService : Service() {
             command.add(address)
         }
         command.addAll(listOf("run", "--token", token))
-        val started = ProcessBuilder(command).redirectErrorStream(true).apply {
-            environment()["HOME"] = home.absolutePath
-            environment()["TMPDIR"] = cacheDir.absolutePath
-            environment()["GODEBUG"] = "netdns=cgo"
-        }.start()
+        // Launch through Shizuku's shell: the app cannot exec files in its own data directory.
+        val setup = "mkdir -p ${ShizukuShell.quote(shellHome)} ${ShizukuShell.quote(shellTmp)}"
+        val environment = "HOME=${ShizukuShell.quote(shellHome)} " +
+            "TMPDIR=${ShizukuShell.quote(shellTmp)} GODEBUG=netdns=cgo"
+        val shellCommand = "$setup; $environment " +
+            command.joinToString(" ") { ShizukuShell.quote(it) } + " 2>&1"
+        val started = ShizukuShell.newProcess(shellCommand)
         process = started
         val endpoint = DeviceEndpoint.endpoint(deviceName)
         setState(false, endpoint, null)
