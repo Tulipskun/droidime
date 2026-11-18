@@ -51,10 +51,10 @@ object TermuxCloudflaredInstaller {
             setStatus(context, "Bundled cloudflared ready")
             return target
         }
-        if (cached && remoteVersion == null && savedHash != null &&
-            sha256(target).equals(savedHash, ignoreCase = true)
-        ) {
-            // Offline with a verified copy: keep it rather than failing the tunnel start.
+        if (cached && savedHash != null && sha256(target).equals(savedHash, ignoreCase = true)) {
+            // Offline, or upgrading from a build that stored only the hash: keep the verified
+            // copy and record its build id so later app updates do not download it again.
+            prefs.edit().putString(VERSION_KEY, remoteVersion ?: savedVersion).apply()
             setStatus(context, "Bundled cloudflared ready")
             return target
         }
