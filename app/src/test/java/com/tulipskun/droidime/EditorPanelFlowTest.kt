@@ -134,6 +134,14 @@ class EditorPanelFlowTest {
         assertEquals("Select all", getField(cleared[1][3].second!!, "label"))
     }
 
+    @Test fun editorPanelFooterOffersUndoAndRedoLikeGboard() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val rows = invoke(service, "buildEditorRows") as List<List<Pair<Float, Any?>>>
+        assertEquals(5, rows.last().size)
+        val labels = rows.last().map { getField(it.second!!, "label") }
+        assertTrue(labels.containsAll(listOf("Home", "End", "Undo", "Redo", "Delete")))
+    }
+
     @Test fun cutActionRemovesSelectedText() {
         val (service, view) = editor()
         invoke(service, "editorAction", "Select all")

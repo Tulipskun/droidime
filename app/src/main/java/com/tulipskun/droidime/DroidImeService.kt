@@ -1298,13 +1298,16 @@ class DroidImeService : InputMethodService() {
         fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
         val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
         val topAction = if (hasSelection) action("Cut") else action("Select all")
+        // A compact 4-column grid plus an action row, like Gboard's text-editing panel. Keys are
+        // sized in layout rather than stretched to fill the keyboard.
         return listOf(
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
             listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
             listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
-            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
-            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete"))
+            listOf(1f to action("→"), 1f to action("↓"), 1f to null, 1f to action("Paste")),
+            listOf(1f to action("Home"), 1f to action("End"), 1f to action("Undo"),
+                1f to action("Redo"), 1f to action("Delete"))
         )
     }
 
@@ -1941,11 +1944,11 @@ class DroidImeService : InputMethodService() {
                 return rows
             }
             if (pinned.isNotEmpty()) {
-                rows.add(listOf(1f to sectionCell("Pinned")))
+                rows.add(listOf(1f to sectionCell("PINNED")))
                 pinned.forEach { clip -> rows.add(listOf(1f to clipCell(clip.id))) }
             }
             if (recent.isNotEmpty()) {
-                rows.add(listOf(1f to sectionCell("Recent")))
+                rows.add(listOf(1f to sectionCell("RECENT")))
                 recent.forEach { clip -> rows.add(listOf(1f to clipCell(clip.id))) }
             }
             return rows
@@ -1966,7 +1969,7 @@ class DroidImeService : InputMethodService() {
             Cell(name, KeyStyle.SECTION, null, action = {}, longAction = {})
 
         private fun emptyCell(): Cell =
-            Cell("No copies yet", KeyStyle.CLIP, null, action = {})
+            Cell("Your clipboard is empty", KeyStyle.CLIP, null, action = {})
 
         // A clip card. Tapping pastes (or toggles selection in edit mode); long-press opens the
         // popup menu, drawn as a floating card over the panel the way Gboard does.
@@ -2226,22 +2229,27 @@ class DroidImeService : InputMethodService() {
             val hasSelection = editorCells.any { it.label == "Cut" }
             val left = dpf(10f)
             val right = (width - dpf(10f)).coerceAtLeast(left + 1f)
-            val gap = dpf(7f)
+            val gap = dpf(8f)
             val colW = ((right - left - gap * 3f) / 4f).coerceAtLeast(1f)
             val top = dpf(6f)
-            val headerH = dpf(42f)
-            val bodyTop = top + headerH + gap
-            val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(bodyTop + 1f)
-            val footerH = dpf(58f)
-            val bodyBottom = bottom - footerH - gap
-            val rowH = ((bodyBottom - bodyTop - gap * 2f) / 3f).coerceAtLeast(1f)
-            fun place(label: String, column: Int, row: Int, spanRows: Int = 1) {
+            val headerH = dpf(38f)
+            val headerBottom = top + headerH
+            val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(headerBottom + 1f)
+            val footerH = dpf(46f)
+            val footerTop = (bottom - footerH).coerceAtLeast(headerBottom + 1f)
+            // Fixed-size keys centred in the free space: Gboard's editing panel stays compact
+            // instead of stretching every button across the whole keyboard.
+            val keyH = dpf(64f)
+            val bodyH = keyH * 3f + gap * 2f
+            val bodyTop = headerBottom + gap +
+                ((footerTop - gap - headerBottom - gap - bodyH).coerceAtLeast(0f) / 2f)
+            fun place(label: String, column: Int, row: Int) {
                 val cell = byLabel[label] ?: return
                 val x = left + column * (colW + gap)
-                val y = bodyTop + row * (rowH + gap)
-                val y2 = (y + rowH * spanRows + gap * (spanRows - 1)).coerceAtMost(bodyBottom)
-                cell.rect.set(x, y, x + colW, y2)
-                cell.touchRect.set(x, y - gap / 2f, x + colW, y2 + gap / 2f)
+                val y = bodyTop + row * (keyH + gap)
+                cell.rect.set(x, y, x + colW, (y + keyH).coerceAtMost(footerTop - gap))
+                cell.touchRect.set(cell.rect.left, cell.rect.top - gap / 2f,
+                    cell.rect.right, cell.rect.bottom + gap / 2f)
                 flat.add(cell)
             }
             byLabel["Close"]?.let { cell ->
@@ -2254,23 +2262,20 @@ class DroidImeService : InputMethodService() {
                 cell.touchRect.set(left + dpf(48f), 0f, width.toFloat(), top + headerH + gap)
                 flat.add(cell)
             }
-            place("←", 0, 0, 3)
+            place("←", 0, 0)
             place("↑", 1, 0)
-            place("Select", 1, 1)
-            place("↓", 1, 2)
-            place("→", 2, 0, 3)
             place(if (hasSelection) "Cut" else "Select all", 3, 0)
+            place("Select", 1, 1)
             place("Copy", 3, 1)
+            place("→", 0, 2)
+            place("↓", 1, 2)
             place("Paste", 3, 2)
-            val footerGap = gap
-            val footerY = bodyBottom + footerGap
-            val footerW = (right - left - footerGap * 2f) / 4f
-            listOf("Home", "End", "Delete").forEachIndexed { index, label ->
+            val footerW = ((right - left - gap * 4f) / 5f).coerceAtLeast(1f)
+            listOf("Home", "End", "Undo", "Redo", "Delete").forEachIndexed { index, label ->
                 val cell = byLabel[label] ?: return@forEachIndexed
-                val x = when (index) { 0 -> left; 1 -> left + footerW * 1.5f + footerGap * 0.5f; else -> left + footerW * 3f + footerGap }
-                val w = if (index == 2) footerW else footerW * 1.5f
-                cell.rect.set(x, footerY, (x + w).coerceAtMost(right), bottom)
-                cell.touchRect.set(cell.rect.left, footerY, cell.rect.right, height.toFloat())
+                val x = left + index * (footerW + gap)
+                cell.rect.set(x, footerTop, (x + footerW).coerceAtMost(right), bottom)
+                cell.touchRect.set(cell.rect.left, footerTop - gap / 2f, cell.rect.right, height.toFloat())
                 flat.add(cell)
             }
             this.cells = flat
@@ -2290,6 +2295,7 @@ class DroidImeService : InputMethodService() {
                 val h = when {
                     index == 0 -> headerH
                     first?.style == KeyStyle.SECTION -> sectionH
+                    first?.style == KeyStyle.CLIP && first.clipId == null -> dpf(150f)
                     else -> cardH
                 }
                 val bottom = top + h
@@ -2318,11 +2324,15 @@ class DroidImeService : InputMethodService() {
         }
 
         // The floating long-press menu over a clip card: Pin/Unpin and Delete, like Gboard's.
+        // Width follows the longest label so every device shows the full text.
         private fun clipMenuRect(card: RectF): RectF {
-            val w = dpf(150f)
-            val rowH = dpf(40f)
+            textPaint.textSize = dpf(15f)
+            val labelW = maxOf(textPaint.measureText("Unpin"), textPaint.measureText("Delete"))
+            val w = (labelW + dpf(72f)).coerceAtLeast(dpf(150f))
+            val rowH = dpf(44f)
             val h = rowH * 2f
-            val cx = card.centerX().coerceIn(w / 2f + dpf(4f), width - w / 2f - dpf(4f))
+            val margin = w / 2f + dpf(4f)
+            val cx = card.centerX().coerceIn(margin, (width - margin).coerceAtLeast(margin))
             var top = card.top - dpf(6f) - h
             if (top < dpf(4f)) top = card.bottom + dpf(6f)
             return RectF(cx - w / 2f, top, cx + w / 2f, top + h)
@@ -2730,20 +2740,15 @@ class DroidImeService : InputMethodService() {
                 return
             }
             if (cell.style == KeyStyle.HEADER) {
-                // Gboard's clipboard header shows only the action; other panels keep a title.
+                // Gboard keeps the panel title beside the back arrow and the action on the right.
                 textPaint.color = ink
                 textPaint.typeface = mediumFace
                 textPaint.textSize = dpf(16f)
                 val m = textPaint.fontMetrics
                 val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
-                if (!clipPanelVisible) {
-                    val title = when {
-                        editorPanelVisible -> "Text editing"
-                        else -> "Clipboard"
-                    }
-                    textPaint.textAlign = Paint.Align.LEFT
-                    canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
-                }
+                val title = if (editorPanelVisible) "Text editing" else "Clipboard"
+                textPaint.textAlign = Paint.Align.LEFT
+                canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.RIGHT
                 canvas.drawText(cell.label, cell.rect.right - dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.CENTER
@@ -2758,6 +2763,29 @@ class DroidImeService : InputMethodService() {
             )
             shape.cornerRadius = dpf(14f)
             shape.draw(canvas)
+            if (!editorPanelVisible && cell.clipId == null) {
+                // Gboard's empty clipboard: an outlined clipboard icon above a short explanation.
+                val cx = cell.rect.centerX()
+                val iconTop = cell.rect.top + dpf(22f)
+                iconStroke.color = colors.hint
+                iconStroke.strokeWidth = dpf(2f)
+                canvas.drawRoundRect(cx - dpf(15f), iconTop, cx + dpf(15f), iconTop + dpf(34f),
+                    dpf(4f), dpf(4f), iconStroke)
+                canvas.drawRoundRect(cx - dpf(7f), iconTop - dpf(4f), cx + dpf(7f), iconTop + dpf(6f),
+                    dpf(3f), dpf(3f), iconFill.apply { color = colors.hint })
+                canvas.drawLine(cx - dpf(8f), iconTop + dpf(14f), cx + dpf(8f), iconTop + dpf(14f), iconStroke)
+                canvas.drawLine(cx - dpf(8f), iconTop + dpf(21f), cx + dpf(5f), iconTop + dpf(21f), iconStroke)
+                val m = textPaint.fontMetrics
+                textPaint.color = ink
+                textPaint.textSize = dpf(15f)
+                canvas.drawText(cell.label, cx,
+                    cell.rect.centerY() + dpf(24f) - (m.ascent + m.descent) / 2f, textPaint)
+                textPaint.color = colors.hint
+                textPaint.textSize = dpf(12f)
+                canvas.drawText("Copied text and screenshots appear here", cx,
+                    cell.rect.centerY() + dpf(44f) - (m.ascent + m.descent) / 2f, textPaint)
+                return
+            }
             if (editorPanelVisible && cell.label in setOf("←", "→", "↑", "↓")) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
@@ -2792,26 +2820,31 @@ class DroidImeService : InputMethodService() {
                 return
             }
             val clip = clips.firstOrNull { it.id == cell.clipId }
-            if (selected) {
-                // Edit mode marks the chosen clip with a filled check circle on the right edge.
-                val r = dpf(9f)
-                val px = cell.rect.right - dpf(20f)
-                val py = cell.rect.centerY()
-                iconFill.color = colors.enter
-                canvas.drawCircle(px, py, r, iconFill)
-                iconStroke.color = colors.enterText
-                iconStroke.strokeWidth = dpf(1.8f)
-                iconStroke.strokeCap = Paint.Cap.ROUND
-                canvas.drawLine(px - r * 0.5f, py, px - r * 0.1f, py + r * 0.4f, iconStroke)
-                canvas.drawLine(px - r * 0.1f, py + r * 0.4f, px + r * 0.55f, py - r * 0.45f, iconStroke)
-                iconStroke.strokeCap = Paint.Cap.BUTT
+            val py = cell.rect.centerY()
+            if (clipEdit && cell.clipId != null) {
+                // Gboard's edit mode puts a checkbox on the left of every clip card.
+                val px = cell.rect.left + dpf(20f)
+                val r = dpf(10f)
+                if (selected) {
+                    iconFill.color = colors.enter
+                    canvas.drawCircle(px, py, r, iconFill)
+                    iconStroke.color = colors.enterText
+                    iconStroke.strokeWidth = dpf(1.8f)
+                    iconStroke.strokeCap = Paint.Cap.ROUND
+                    canvas.drawLine(px - r * 0.5f, py, px - r * 0.1f, py + r * 0.4f, iconStroke)
+                    canvas.drawLine(px - r * 0.1f, py + r * 0.4f, px + r * 0.55f, py - r * 0.45f, iconStroke)
+                    iconStroke.strokeCap = Paint.Cap.BUTT
+                } else {
+                    iconStroke.color = colors.hint
+                    iconStroke.strokeWidth = dpf(1.6f)
+                    canvas.drawCircle(px, py, r, iconStroke)
+                }
             } else if (clip != null && clip.pinned) {
                 // Pin marker at the right edge of the card, as Gboard shows it.
                 iconFill.color = colors.hint
                 iconStroke.color = colors.hint
                 iconStroke.strokeWidth = dpf(1.6f)
                 val px = cell.rect.right - dpf(20f)
-                val py = cell.rect.centerY()
                 canvas.drawCircle(px, py - dpf(3f), dpf(3.2f), iconStroke)
                 canvas.drawLine(px, py, px, py + dpf(6f), iconStroke)
             }
@@ -2821,14 +2854,16 @@ class DroidImeService : InputMethodService() {
                 val display = when (cell.label) {
                     "Home" -> "↤"
                     "End" -> "↦"
+                    "Undo" -> "↶"
+                    "Redo" -> "↷"
                     "Delete" -> "⌫"
                     else -> cell.label
                 }
                 textPaint.textSize = dpf(
                     when (cell.label) {
-                        "←", "→", "↑", "↓" -> 30f
-                        "Home", "End", "Delete" -> 26f
-                        else -> 15f
+                        "←", "→", "↑", "↓" -> 26f
+                        "Home", "End", "Undo", "Redo", "Delete" -> 22f
+                        else -> 14f
                     }
                 )
                 val m = textPaint.fontMetrics
@@ -2839,16 +2874,16 @@ class DroidImeService : InputMethodService() {
             }
             val text = cell.label
             textPaint.textSize = dpf(15f)
-            val maxW = cell.rect.width() - dpf(56f)
+            val checkboxMode = clipEdit && cell.clipId != null
+            val textLeft = cell.rect.left + dpf(if (checkboxMode) 44f else 16f)
+            val maxW = (cell.rect.right - textLeft - dpf(if (checkboxMode) 12f else 40f))
+                .coerceAtLeast(1f)
             var shown = text
             while (shown.length > 1 && textPaint.measureText(shown) > maxW) shown = shown.dropLast(1)
             if (shown.length < text.length) shown = shown.dropLast(1) + "…"
             val m = textPaint.fontMetrics
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(
-                shown, cell.rect.left + dpf(16f),
-                cell.rect.centerY() - (m.ascent + m.descent) / 2f, textPaint
-            )
+            canvas.drawText(shown, textLeft, py - (m.ascent + m.descent) / 2f, textPaint)
             textPaint.textAlign = Paint.Align.CENTER
         }
 
@@ -2959,12 +2994,21 @@ class DroidImeService : InputMethodService() {
         private fun drawClipMenu(canvas: Canvas, colors: Palette) {
             val card = cells.firstOrNull { it.clipId == clipMenuId } ?: return
             val popup = clipMenuRect(card.rect)
+            // A soft drop shadow makes the menu read as floating above the panel.
+            shape.setColor(Color.argb(60, 0, 0, 0))
+            shape.setBounds(
+                (popup.left + dpf(2f)).toInt(), (popup.top + dpf(3f)).toInt(),
+                (popup.right + dpf(2f)).toInt(), (popup.bottom + dpf(3f)).toInt()
+            )
+            shape.cornerRadius = dpf(12f)
+            shape.draw(canvas)
             shape.setColor(colors.key)
             shape.setBounds(popup.left.toInt(), popup.top.toInt(), popup.right.toInt(), popup.bottom.toInt())
-            shape.cornerRadius = dpf(12f)
             shape.draw(canvas)
             val clip = clips.firstOrNull { it.id == clipMenuId } ?: return
             val labels = listOf(if (clip.pinned) "Unpin" else "Pin", "Delete")
+            iconStroke.color = colors.text
+            iconStroke.strokeWidth = dpf(1.6f)
             textPaint.color = colors.text
             textPaint.typeface = Typeface.DEFAULT
             textPaint.textSize = dpf(15f)
@@ -2972,8 +3016,28 @@ class DroidImeService : InputMethodService() {
             val m = textPaint.fontMetrics
             val rowH = popup.height() / labels.size
             labels.forEachIndexed { i, label ->
-                val cy = popup.top + rowH * i + rowH / 2f - (m.ascent + m.descent) / 2f
-                canvas.drawText(label, popup.left + dpf(16f), cy, textPaint)
+                val cy = popup.top + rowH * i + rowH / 2f
+                val ix = popup.left + dpf(20f)
+                if (i == 0) {
+                    // Pin: a small head and stem, filled only when the clip is already pinned.
+                    iconFill.color = colors.text
+                    canvas.drawCircle(
+                        ix, cy - dpf(4f), dpf(2.5f),
+                        if (clip.pinned) iconFill else iconStroke
+                    )
+                    canvas.drawLine(ix, cy - dpf(1f), ix, cy + dpf(6f), iconStroke)
+                } else {
+                    // Trash can.
+                    canvas.drawLine(ix - dpf(5f), cy - dpf(4f), ix + dpf(5f), cy - dpf(4f), iconStroke)
+                    canvas.drawRoundRect(ix - dpf(4f), cy - dpf(4f), ix + dpf(4f), cy + dpf(6f),
+                        dpf(1.5f), dpf(1.5f), iconStroke)
+                    canvas.drawLine(ix - dpf(2f), cy - dpf(2f), ix - dpf(2f), cy + dpf(4f), iconStroke)
+                    canvas.drawLine(ix + dpf(2f), cy - dpf(2f), ix + dpf(2f), cy + dpf(4f), iconStroke)
+                }
+                canvas.drawText(
+                    label, popup.left + dpf(42f),
+                    cy - (m.ascent + m.descent) / 2f, textPaint
+                )
             }
             textPaint.textAlign = Paint.Align.CENTER
         }
