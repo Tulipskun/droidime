@@ -5,17 +5,19 @@ import org.junit.Test
 
 class TextDeletionTest {
     @Test
-    fun thaiMarksStayWithTheirBaseCharacter() {
-        assertEquals(0, TextDeletion.previousClusterStart("ก้"))
+    fun thaiMarksDeleteBeforeTheirBaseCharacter() {
+        assertEquals(1, TextDeletion.previousClusterStart("ก้"))
         assertEquals(2, TextDeletion.previousClusterStart("ก้ข"))
-        assertEquals(0, TextDeletion.previousClusterStart("ก้ข", 2))
+        assertEquals(1, TextDeletion.previousClusterStart("ก้ข", 2))
+        assertEquals(1, TextDeletion.previousClusterStart("ก็"))
+        assertEquals(0, TextDeletion.previousClusterStart("ก็", 1))
     }
 
     @Test
     fun emojiAndCombiningMarksStayTogether() {
         assertEquals(0, TextDeletion.previousClusterStart("👨‍💻"))
         assertEquals(1, TextDeletion.previousClusterStart("a👨‍💻"))
-        assertEquals(0, TextDeletion.previousClusterStart("e\u0301"))
+        assertEquals(1, TextDeletion.previousClusterStart("e\u0301"))
     }
 
     @Test

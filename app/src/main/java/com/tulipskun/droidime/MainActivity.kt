@@ -100,9 +100,16 @@ class MainActivity : Activity() {
         setTheme(if (dark) R.style.AppThemeDark else R.style.AppTheme)
         super.onCreate(savedInstanceState)
 
+        val density = resources.displayMetrics.density
+        val horizontalPadding = dp(
+            SettingsLayout.horizontalPaddingDp(resources.displayMetrics.widthPixels / density)
+        )
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(18), dp(20), dp(24))
+            gravity = Gravity.CENTER_HORIZONTAL
+            // All horizontal padding lives here. The ScrollView only insets vertically, so
+            // narrow devices do not lose 40dp to two stacked margins.
+            setPadding(horizontalPadding, dp(18), horizontalPadding, dp(24))
         }
 
         content.addView(TextView(this).apply {
@@ -571,9 +578,9 @@ class MainActivity : Activity() {
             setBackgroundColor(bgColor)
             setOnApplyWindowInsetsListener { view, insets ->
                 view.setPadding(
-                    dp(20),
+                    0,
                     insets.systemWindowInsetTop + dp(14),
-                    dp(20),
+                    0,
                     insets.systemWindowInsetBottom + dp(18)
                 )
                 insets
@@ -979,7 +986,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun sectionParams() = LinearLayout.LayoutParams(-1, -2).apply {
+    private fun sectionParams() = LinearLayout.LayoutParams(
+        SettingsLayout.contentWidthPx(resources.displayMetrics.widthPixels, resources.displayMetrics.density),
+        -2
+    ).apply {
         bottomMargin = dp(13)
     }
 

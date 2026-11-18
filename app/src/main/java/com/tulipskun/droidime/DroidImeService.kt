@@ -1250,6 +1250,21 @@ class DroidImeService : InputMethodService() {
 
     private fun editorKey(keyCode: Int, selecting: Boolean = false) {
         val connection = currentInputConnection ?: return
+        // Without select mode a directional key collapses the selection. Do it here instead of
+        // relying on the editor to interpret the key event: some connections leave the selection
+        // intact, which kept the editing panel showing Cut long after the caret had moved.
+        if (!selecting) {
+            val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
+            if (extracted != null && extracted.selectionStart >= 0 &&
+                extracted.selectionStart != extracted.selectionEnd
+            ) {
+                val toEnd = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                    keyCode == KeyEvent.KEYCODE_MOVE_END
+                val offset = extracted.startOffset +
+                    (if (toEnd) extracted.selectionEnd else extracted.selectionStart)
+                connection.setSelection(offset, offset)
+            }
+        }
         val meta = if (selecting) KeyEvent.META_SHIFT_ON else 0
         val now = SystemClock.uptimeMillis()
         connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, meta))
@@ -1463,10 +1478,26 @@ class DroidImeService : InputMethodService() {
         thaiComposingText = ""
     }
 
+    // The composing underline belongs to the word being typed, not the whole sentence. Once the
+    // trailing Thai run is a known word, the next Thai key commits it and starts a fresh
+    // composing region so the underline moves to the new word instead of stretching further.
+    private fun thaiWordIsComplete(before: String): Boolean {
+        var start = before.length
+        while (start > 0 && isThai(before[start - 1])) start--
+        val run = before.substring(start)
+        if (run.isEmpty()) return false
+        if ((dictTh?.indexOf(run) ?: -1) >= 0) return true
+        return userWords.containsKey(run)
+    }
+
     private fun typeText(value: String) {
         val connection = currentInputConnection
         if (connection != null) {
             if (language == Language.THAI && isThaiText(value)) {
+                if (thaiComposingText.isNotEmpty()) {
+                    val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+                    if (thaiWordIsComplete(before)) finishThaiComposition()
+                }
                 thaiComposingText += value
                 connection.setComposingText(thaiComposingText, 1)
             } else {

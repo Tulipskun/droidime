@@ -83,8 +83,8 @@ class DeleteGlideTest {
         assertEquals("ก้", getField(service, "thaiComposingText"))
 
         call(service, "deleteOne", false)
-        assertEquals("", connection.getTextBeforeCursor(20, 0).toString())
-        assertEquals("", getField(service, "thaiComposingText"))
+        assertEquals("ก", connection.getTextBeforeCursor(20, 0).toString())
+        assertEquals("ก", getField(service, "thaiComposingText"))
     }
 
     private fun getField(target: Any, name: String): Any? {

@@ -112,6 +112,23 @@ class LogicTest {
         assertEquals("ขอบคุณ", getField(out[0]!!, "text"))
     }
 
+    @Test fun thaiComposingUnderlineMovesToTheNextWord() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())
+        val connection = BaseInputConnection(editor, true)
+        setField(service, "mInputConnection", connection)
+        val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
+        setField(service, "dictTh", ctor.newInstance(arrayOf("สวัสดี"), intArrayOf(100)))
+        val language = Class.forName("com.tulipskun.droidime.DroidImeService\$Language")
+        setField(service, "language", language.enumConstants!!.first { (it as Enum<*>).name == "THAI" })
+
+        for (ch in "สวัสดีครับ") call(service, "typeText", ch.toString())
+
+        assertEquals("สวัสดีครับ", connection.getTextBeforeCursor(20, 0).toString())
+        assertEquals("ครับ", getField(service, "thaiComposingText"))
+    }
+
     @Test fun thaiNextWordIsLearnedFromTypingWithSpace() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val editor = android.widget.EditText(Robolectric.buildActivity(android.app.Activity::class.java).get())

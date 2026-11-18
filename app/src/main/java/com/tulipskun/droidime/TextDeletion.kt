@@ -10,34 +10,44 @@ internal object TextDeletion {
         else -> false
     }
 
-    private fun isCombining(codePoint: Int): Boolean {
+    // Variation selectors and skin tones belong to the emoji they modify and move with it.
+    private fun isEmojiModifier(codePoint: Int): Boolean =
+        codePoint == 0xFE0F || codePoint in 0x1F3FB..0x1F3FF
+
+    private fun isDeletableMark(codePoint: Int): Boolean {
+        if (isEmojiModifier(codePoint)) return false
         if (isThaiMark(codePoint)) return true
-        if (codePoint == 0xFE0F || codePoint in 0x1F3FB..0x1F3FF) return true
         val type = Character.getType(codePoint)
         return type == Character.NON_SPACING_MARK.toInt() ||
             type == Character.COMBINING_SPACING_MARK.toInt() ||
             type == Character.ENCLOSING_MARK.toInt()
     }
 
-    // Start of the visible character immediately before `end`. Thai vowel and tone marks stay
-    // with their base consonant, and emoji joined by ZWJ are removed as one character.
+    // Start of the visible unit immediately before `end`. Gboard steps back through Thai
+    // vowel and tone marks one at a time ("ก็" becomes "ก" on one backspace), while an emoji
+    // joined by ZWJ or carrying a skin tone is still removed as a single character.
     fun previousClusterStart(text: String, end: Int = text.length): Int {
         if (end <= 0) return 0
-        var cursor = end.coerceAtMost(text.length)
-        while (cursor > 0) {
-            val mark = text.codePointBefore(cursor)
-            if (!isCombining(mark)) break
-            cursor -= Character.charCount(mark)
-        }
+        val cursor = end.coerceAtMost(text.length)
         if (cursor == 0) return 0
-        val base = text.codePointBefore(cursor)
-        var start = cursor - Character.charCount(base)
+        val last = text.codePointBefore(cursor)
+        if (isDeletableMark(last)) return cursor - Character.charCount(last)
+
+        var pos = cursor
+        while (pos > 0) {
+            val mark = text.codePointBefore(pos)
+            if (!isEmojiModifier(mark)) break
+            pos -= Character.charCount(mark)
+        }
+        if (pos == 0) return 0
+        val base = text.codePointBefore(pos)
+        var start = pos - Character.charCount(base)
         while (start > 0 && text.codePointBefore(start) == 0x200D) {
             val zwjStart = start - 1
             if (zwjStart == 0) break
             val joined = text.codePointBefore(zwjStart)
             start = zwjStart - Character.charCount(joined)
-            while (start > 0 && isCombining(text.codePointBefore(start))) {
+            while (start > 0 && isEmojiModifier(text.codePointBefore(start))) {
                 val mark = text.codePointBefore(start)
                 start -= Character.charCount(mark)
             }
