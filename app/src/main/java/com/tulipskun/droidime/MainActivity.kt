@@ -23,7 +23,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -103,6 +102,8 @@ class MainActivity : Activity() {
     private val inputColor get() = if (dark) Color.rgb(52, 54, 60) else Color.rgb(245, 247, 251)
     private val okColor get() = if (dark) Color.rgb(98, 201, 150) else Color.rgb(36, 125, 84)
     private val selectedNavColor get() = if (dark) Color.rgb(41, 62, 107) else Color.rgb(220, 231, 255)
+    private val pressedColor get() = if (dark) Color.rgb(52, 58, 70) else Color.rgb(224, 231, 242)
+    private val dividerColor get() = if (dark) Color.rgb(55, 59, 68) else Color.rgb(226, 231, 239)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(if (dark) R.style.AppThemeDark else R.style.AppTheme)
@@ -128,7 +129,7 @@ class MainActivity : Activity() {
         val mcpContent = settingsPane()
         val appContent = settingsPane()
 
-        val setupCard = card()
+        val setupCard = settingsSection()
         setupCard.addView(sectionTitle("Keyboard setup"))
         setupStatus = TextView(this).apply {
             textSize = 14f
@@ -346,7 +347,7 @@ class MainActivity : Activity() {
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         refreshRemoteStatus()
 
-        val testCard = card()
+        val testCard = settingsSection()
         testCard.addView(sectionTitle("Try the keyboard"))
         testCard.addView(TextView(this).apply {
             text = "Tap the field and type to verify the active keyboard."
@@ -367,17 +368,15 @@ class MainActivity : Activity() {
             background = rounded(inputColor, dp(10))
         })
 
-        val languageCard = card()
+        val languageCard = settingsSection()
         languageCard.addView(sectionTitle("Languages"))
-        val thaiCheck = CheckBox(this).apply {
-            text = "ไทย"
-            textSize = 15f
+        val thaiCheck = Switch(this).apply {
             isChecked = preferences.getBoolean("language_th", true)
+            contentDescription = "ไทย"
         }
-        val englishCheck = CheckBox(this).apply {
-            text = "English"
-            textSize = 15f
+        val englishCheck = Switch(this).apply {
             isChecked = preferences.getBoolean("language_en", true)
+            contentDescription = "English"
         }
         thaiCheck.setOnCheckedChangeListener { _, checked ->
             if (!checked && !englishCheck.isChecked) {
@@ -393,10 +392,11 @@ class MainActivity : Activity() {
                 preferences.edit().putBoolean("language_en", checked).apply()
             }
         }
-        languageCard.addView(thaiCheck)
-        languageCard.addView(englishCheck)
+        languageCard.addView(switchRow("ไทย", thaiCheck))
+        languageCard.addView(divider())
+        languageCard.addView(switchRow("English", englishCheck))
 
-        val sizeCard = card()
+        val sizeCard = settingsSection()
         val currentHeight = preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360)
         val heightLabel = sectionTitle("Keyboard height · ${currentHeight} dp")
         sizeCard.addView(heightLabel)
@@ -414,7 +414,7 @@ class MainActivity : Activity() {
             })
         })
 
-        val themeCard = card()
+        val themeCard = settingsSection()
         themeCard.addView(sectionTitle("Keyboard theme"))
         val currentTheme = preferences.getString("theme", "system")
         val themeGroup = RadioGroup(this).apply { orientation = LinearLayout.VERTICAL }
@@ -436,9 +436,10 @@ class MainActivity : Activity() {
         }
         themeCard.addView(themeGroup)
 
-        val feedbackCard = card()
+        val feedbackCard = settingsSection()
         feedbackCard.addView(sectionTitle("Feedback"))
         feedbackCard.addView(prefSwitch("Vibrate on key press", "haptics", true))
+        feedbackCard.addView(divider())
         val currentStrength = preferences.getInt("haptic_ms", 15).coerceIn(5, 50)
         val strengthLabel = TextView(this).apply {
             text = "Vibration strength · $currentStrength ms"
@@ -460,20 +461,27 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         })
+        feedbackCard.addView(divider())
         feedbackCard.addView(prefSwitch("Sound on key press", "key_sound", false))
 
-        val typingCard = card()
+        val typingCard = settingsSection()
         typingCard.addView(sectionTitle("Typing"))
-        typingCard.addView(prefSwitch("Word suggestions (Thai and English)", "suggestions", true))
-        typingCard.addView(prefSwitch("Glide typing (Thai and English)", "glide_typing", true))
-        typingCard.addView(prefSwitch("Auto-capitalize (English)", "auto_caps", true))
-        typingCard.addView(prefSwitch("Double space inserts a period (English)", "double_space_period", true))
-        typingCard.addView(prefSwitch("Show key hints (long-press to type)", "key_hints", true))
-        typingCard.addView(prefSwitch("Number row on English keyboard", "number_row_en", true))
-        typingCard.addView(prefSwitch("Number row on Thai keyboard", "number_row_th", false))
-        typingCard.addView(prefSwitch("Clipboard history (tap the clipboard icon)", "clipboard", true))
+        listOf(
+            "Word suggestions (Thai and English)" to "suggestions" to true,
+            "Glide typing (Thai and English)" to "glide_typing" to true,
+            "Auto-capitalize (English)" to "auto_caps" to true,
+            "Double space inserts a period (English)" to "double_space_period" to true,
+            "Show key hints (long-press to type)" to "key_hints" to true,
+            "Number row on English keyboard" to "number_row_en" to true,
+            "Number row on Thai keyboard" to "number_row_th" to false,
+            "Clipboard history (tap the clipboard icon)" to "clipboard" to true
+        ).forEach { (entry, default) ->
+            val (label, key) = entry
+            typingCard.addView(prefSwitch(label, key, default))
+            typingCard.addView(divider())
+        }
 
-        val dictionaryCard = card()
+        val dictionaryCard = settingsSection()
         dictionaryCard.addView(sectionTitle("Dictionary"))
         dictionaryCard.addView(TextView(this).apply {
             text = "Search words in the built-in Thai and English dictionaries and your personal dictionary."
@@ -510,7 +518,7 @@ class MainActivity : Activity() {
         }
         dictionaryCard.addView(dictionaryResult)
 
-        val learningCard = card()
+        val learningCard = settingsSection()
         learningCard.addView(sectionTitle("Touch coordinate learning"))
         val eventCount = preferences.getString("touch_history", "").orEmpty().lineSequence().count { it.isNotBlank() }
         learningCard.addView(TextView(this).apply {
@@ -532,7 +540,7 @@ class MainActivity : Activity() {
                 .show()
         })
 
-        val updateCard = card()
+        val updateCard = settingsSection()
         updateCard.addView(sectionTitle("App update"))
         status = TextView(this).apply {
             text = getString(R.string.update_current, BuildConfig.VERSION_NAME)
@@ -552,7 +560,7 @@ class MainActivity : Activity() {
         updateButton = actionButton("Check for updates") { checkForUpdate() }
         updateCard.addView(updateButton)
 
-        val logCard = card()
+        val logCard = settingsSection()
         logCard.addView(sectionTitle("Diagnostic log"))
         logCard.addView(TextView(this).apply {
             text = "Crash reports are stored inside the app and remain available after a restart."
@@ -605,7 +613,7 @@ class MainActivity : Activity() {
             navRows[destination.title] = this
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(16), dp(15), dp(16), dp(15))
-            background = rounded(cardColor, dp(12))
+            background = stateBackground(cardColor, pressedColor, dp(12))
             isClickable = true
             isFocusable = true
             contentDescription = destination.title
@@ -676,8 +684,9 @@ class MainActivity : Activity() {
             navScroll.visibility = if (wide) View.VISIBLE else View.GONE
             detailScroll.visibility = View.VISIBLE
             navRows.forEach { (name, row) ->
-                row.background = rounded(
-                    if (name == destination.title) selectedNavColor else cardColor, dp(12)
+                row.background = stateBackground(
+                    if (name == destination.title) selectedNavColor else cardColor,
+                    pressedColor, dp(12)
                 )
             }
         }
@@ -688,7 +697,9 @@ class MainActivity : Activity() {
             navScroll.visibility = if (wide) View.VISIBLE else View.GONE
             detailScroll.visibility = View.GONE
             backButton.visibility = View.GONE
-            navRows.forEach { (_, row) -> row.background = rounded(cardColor, dp(12)) }
+            navRows.forEach { (_, row) ->
+                row.background = stateBackground(cardColor, pressedColor, dp(12))
+            }
         }
         settingsGoOverview = { showOverview() }
 
@@ -1115,37 +1126,72 @@ class MainActivity : Activity() {
         elevation = dp(1).toFloat()
     }
 
+    // Flat settings section: a heading plus list rows, not a card per control.
+    private fun settingsSection() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(2), dp(6), dp(2), dp(6))
+    }
+
+    private fun divider() = View(this).apply {
+        setBackgroundColor(dividerColor)
+        layoutParams = LinearLayout.LayoutParams(-1, 1)
+    }
+
+    private fun stateBackground(base: Int, pressed: Int, radius: Int) =
+        android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), rounded(pressed, radius))
+            addState(intArrayOf(), rounded(base, radius))
+        }
+
     private fun sectionTitle(value: String) = TextView(this).apply {
         text = value
-        textSize = 17f
+        textSize = 15f
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         setTextColor(sectionColor)
-        setPadding(0, 0, 0, dp(9))
+        setPadding(dp(12), dp(8), dp(12), dp(8))
     }
 
     private fun actionButton(value: String, action: () -> Unit) = TextView(this).apply {
         text = value
-        textSize = 14f
-        gravity = Gravity.CENTER
-        setTextColor(Color.WHITE)
-        setPadding(dp(14), dp(12), dp(14), dp(12))
-        background = rounded(Color.rgb(49, 91, 190), dp(10))
+        textSize = 15f
+        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        setTextColor(if (dark) Color.rgb(130, 170, 255) else Color.rgb(49, 91, 190))
+        setPadding(dp(16), dp(13), dp(16), dp(13))
+        background = stateBackground(cardColor, pressedColor, dp(10))
         isClickable = true
         isFocusable = true
         setOnClickListener { action() }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-            topMargin = dp(7)
+            topMargin = dp(4)
         }
     }
 
-    private fun prefSwitch(label: String, key: String, default: Boolean) = Switch(this).apply {
-        text = label
-        textSize = 15f
-        setPadding(0, dp(6), 0, dp(6))
-        isChecked = preferences.getBoolean(key, default)
-        setOnCheckedChangeListener { _, checked ->
-            preferences.edit().putBoolean(key, checked).apply()
+    private fun switchRow(label: String, toggle: Switch) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(56)
+        setPadding(dp(16), dp(8), dp(12), dp(8))
+        background = stateBackground(cardColor, pressedColor, dp(10))
+        isClickable = true
+        contentDescription = label
+        addView(TextView(this@MainActivity).apply {
+            text = label
+            textSize = 15f
+            setTextColor(headingColor)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(toggle, LinearLayout.LayoutParams(-2, -2))
+        setOnClickListener { toggle.toggle() }
+    }
+
+    private fun prefSwitch(label: String, key: String, default: Boolean): View {
+        val toggle = Switch(this).apply {
+            isChecked = preferences.getBoolean(key, default)
+            contentDescription = label
+            setOnCheckedChangeListener { _, checked ->
+                preferences.edit().putBoolean(key, checked).apply()
+            }
         }
+        return switchRow(label, toggle)
     }
 
     private fun sectionParams() = LinearLayout.LayoutParams(
