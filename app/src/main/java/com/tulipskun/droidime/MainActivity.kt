@@ -81,6 +81,9 @@ class MainActivity : Activity() {
 
     // Width of a settings pane: full column on compact windows, detail column on wide ones.
     private var settingsContentWidth = 0
+    // In compact layout, system Back returns to the settings overview before leaving the app.
+    private var settingsBackToOverview = false
+    private var settingsGoOverview: (() -> Unit)? = null
 
     // The settings screen follows the same light/dark/system choice as the keyboard.
     private val dark by lazy {
@@ -664,6 +667,7 @@ class MainActivity : Activity() {
             addView(detailContent); setBackgroundColor(bgColor); isFillViewport = true
         }
         fun showDestination(destination: Destination) {
+            settingsBackToOverview = !wide
             titleView.text = destination.title
             detailContent.removeAllViews()
             detailContent.addView(destination.pane)
@@ -678,12 +682,15 @@ class MainActivity : Activity() {
             }
         }
         fun showOverview() {
+            settingsBackToOverview = false
             titleView.text = "DroidIME"
             overviewScroll.visibility = View.VISIBLE
             navScroll.visibility = if (wide) View.VISIBLE else View.GONE
             detailScroll.visibility = View.GONE
             backButton.visibility = View.GONE
+            navRows.forEach { (_, row) -> row.background = rounded(cardColor, dp(12)) }
         }
+        settingsGoOverview = { showOverview() }
 
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -750,6 +757,11 @@ class MainActivity : Activity() {
     override fun onPause() {
         remoteStatusHandler.removeCallbacks(remoteStatusPoll)
         super.onPause()
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (settingsBackToOverview) settingsGoOverview?.invoke() else super.onBackPressed()
     }
 
     private fun requestShizuku() {
