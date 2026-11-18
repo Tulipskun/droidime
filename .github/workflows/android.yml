@@ -94,8 +94,6 @@ jobs:
           test -f app/src/main/jniLibs/armeabi-v7a/libcloudflared.so
           test -f app/src/main/jniLibs/x86_64/libcloudflared.so
           test "$(find app/src/main/jniLibs -name libcloudflared.so | wc -l)" -eq 3
-      - name: Test Cloudflare MCP gateway
-        run: npm --prefix gateway test
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

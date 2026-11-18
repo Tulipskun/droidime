@@ -34,6 +34,8 @@ The cloudflared ARM64 runtime is fetched from a pinned Droid-MCP revision during
 
 **Security:** Use a dedicated Cloudflare API Token with only the permissions above. The MCP endpoint has no built-in client login; gateway requests are protected by Cloudflare Access and the Worker injects its service-token credentials when proxying to the device origin.
 
+The Worker that answers `mcp.aixodia.dpdns.org` is not built here: it lives in [Tulipskun/aixodia-workers](https://github.com/Tulipskun/aixodia-workers) (`mcp-gateway/`), which owns the `DEVICE_TUNNELS` namespace the provisioning above writes to.
+
 ## Install
 
 1. Install the APK.
