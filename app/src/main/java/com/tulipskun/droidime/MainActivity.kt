@@ -25,6 +25,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.RadioButton
@@ -78,6 +79,9 @@ class MainActivity : Activity() {
         getSharedPreferences("keyboard_settings", MODE_PRIVATE)
     }
 
+    // Width of a settings pane: full column on compact windows, detail column on wide ones.
+    private var settingsContentWidth = 0
+
     // The settings screen follows the same light/dark/system choice as the keyboard.
     private val dark by lazy {
         when (preferences.getString("theme", "system")) {
@@ -95,35 +99,30 @@ class MainActivity : Activity() {
     private val bodyColor get() = if (dark) Color.rgb(185, 191, 203) else Color.rgb(82, 91, 108)
     private val inputColor get() = if (dark) Color.rgb(52, 54, 60) else Color.rgb(245, 247, 251)
     private val okColor get() = if (dark) Color.rgb(98, 201, 150) else Color.rgb(36, 125, 84)
+    private val selectedNavColor get() = if (dark) Color.rgb(41, 62, 107) else Color.rgb(220, 231, 255)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(if (dark) R.style.AppThemeDark else R.style.AppTheme)
         super.onCreate(savedInstanceState)
 
         val density = resources.displayMetrics.density
-        val horizontalPadding = dp(
-            SettingsLayout.horizontalPaddingDp(resources.displayMetrics.widthPixels / density)
-        )
-        val content = LinearLayout(this).apply {
+        val widthPx = resources.displayMetrics.widthPixels
+        val wide = widthPx / density >= 600f
+        val horizontalPadding = dp(SettingsLayout.horizontalPaddingDp(widthPx / density))
+        settingsContentWidth = if (wide) {
+            (widthPx - dp(280) - horizontalPadding * 2).coerceAtMost(dp(600)).coerceAtLeast(1)
+        } else {
+            SettingsLayout.contentWidthPx(widthPx, density)
+        }
+        // Each destination owns its own pane. The overview lists destinations; it does not
+        // concatenate every control into one endless scroll (Android settings guidance).
+        fun settingsPane() = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            // All horizontal padding lives here. The ScrollView only insets vertically, so
-            // narrow devices do not lose 40dp to two stacked margins.
-            setPadding(horizontalPadding, dp(18), horizontalPadding, dp(24))
+            setPadding(horizontalPadding, dp(14), horizontalPadding, dp(24))
         }
-
-        content.addView(TextView(this).apply {
-            text = "DroidIME"
-            textSize = 30f
-            setTextColor(headingColor)
-            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-        })
-        content.addView(TextView(this).apply {
-            text = "Keyboard settings"
-            textSize = 14f
-            setTextColor(mutedColor)
-            setPadding(0, dp(2), 0, dp(18))
-        })
+        val keyboardContent = settingsPane()
+        val mcpContent = settingsPane()
 
         val setupCard = card()
         setupCard.addView(sectionTitle("Keyboard setup"))
@@ -559,59 +558,179 @@ class MainActivity : Activity() {
         })
         logCard.addView(actionButton("View / copy crash log") { showCrashLog() })
 
-        // The page has two distinct audiences: keyboard users and MCP/remote-control users.
-        // Keep each in one block so neither has to scroll through the other's settings.
-        fun category(label: String, caption: String) {
-            content.addView(TextView(this).apply {
-                text = label
-                textSize = 12f
-                typeface = android.graphics.Typeface.create(
-                    "sans-serif-medium", android.graphics.Typeface.NORMAL
-                )
-                setTextColor(mutedColor)
-                setPadding(dp(4), dp(14), 0, dp(2))
-            })
-            content.addView(TextView(this).apply {
-                text = caption
-                textSize = 12f
-                setTextColor(mutedColor)
-                setPadding(dp(4), 0, 0, dp(7))
-            })
+        // Android settings guidance: an overview list of destinations, one pane per category,
+        // and list-detail on wide windows instead of one long mixed scroll.
+        data class Destination(
+            val title: String, val caption: String, val icon: String, val pane: LinearLayout
+        )
+        val destinations = listOf(
+            Destination(
+                "Keyboard", "Layout, languages, typing, dictionary and app updates",
+                "⌨", keyboardContent
+            ),
+            Destination(
+                "MCP", "Shizuku, device name, Cloudflare Tunnel and webhook",
+                "↗", mcpContent
+            )
+        )
+        keyboardContent.apply {
+            addView(setupCard, sectionParams())
+            addView(languageCard, sectionParams())
+            addView(testCard, sectionParams())
+            addView(sizeCard, sectionParams())
+            addView(themeCard, sectionParams())
+            addView(typingCard, sectionParams())
+            addView(feedbackCard, sectionParams())
+            addView(dictionaryCard, sectionParams())
+            addView(learningCard, sectionParams())
+            addView(updateCard, sectionParams())
+            addView(logCard, sectionParams())
+        }
+        mcpContent.addView(remoteCard, sectionParams())
+
+        var onSelect: (Destination) -> Unit = {}
+        val navRows = LinkedHashMap<String, View>()
+        fun navigationRow(destination: Destination) = LinearLayout(this).apply {
+            tag = destination.title
+            navRows[destination.title] = this
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = rounded(cardColor, dp(12))
+            isClickable = true
+            isFocusable = true
+            contentDescription = destination.title
+            addView(TextView(this@MainActivity).apply {
+                text = destination.icon
+                textSize = 24f
+                setTextColor(headingColor)
+                setPadding(0, 0, dp(16), 0)
+            }, LinearLayout.LayoutParams(-2, -2, 0f).apply { gravity = Gravity.CENTER_VERTICAL })
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = destination.title; textSize = 16f; setTextColor(headingColor)
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = destination.caption; textSize = 13f; setTextColor(mutedColor)
+                    setPadding(0, dp(3), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = "›"; textSize = 24f; setTextColor(mutedColor)
+            }, LinearLayout.LayoutParams(-2, -2, 0f).apply { gravity = Gravity.CENTER_VERTICAL })
+            setOnClickListener { onSelect(destination) }
         }
 
-        category("KEYBOARD", "Layout, languages, typing, dictionary and app updates")
-        content.addView(setupCard, sectionParams())
-        content.addView(languageCard, sectionParams())
-        content.addView(testCard, sectionParams())
-        content.addView(sizeCard, sectionParams())
-        content.addView(themeCard, sectionParams())
-        content.addView(typingCard, sectionParams())
-        content.addView(feedbackCard, sectionParams())
-        content.addView(dictionaryCard, sectionParams())
-        content.addView(learningCard, sectionParams())
-        content.addView(updateCard, sectionParams())
-        content.addView(logCard, sectionParams())
+        val navList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, 0)
+            destinations.forEach { addView(navigationRow(it)) }
+        }
+        val overviewInner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(horizontalPadding, dp(10), horizontalPadding, dp(24))
+            addView(TextView(this@MainActivity).apply {
+                text = "DroidIME"
+                textSize = 30f
+                setTextColor(headingColor)
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Choose a section"
+                textSize = 14f
+                setTextColor(mutedColor)
+                setPadding(0, dp(2), 0, dp(18))
+            })
+            if (!wide) addView(navList)
+        }
+        val overviewScroll = ScrollView(this).apply {
+            addView(overviewInner); setBackgroundColor(bgColor); isFillViewport = true
+        }
+        val navScroll = ScrollView(this).apply {
+            if (wide) addView(navList); setBackgroundColor(bgColor)
+        }
 
-        category("MCP · REMOTE CONTROL", "Shizuku, device name, Cloudflare Tunnel and webhook")
-        content.addView(remoteCard, sectionParams())
+        lateinit var titleView: TextView
+        lateinit var backButton: TextView
+        val detailContent = FrameLayout(this)
+        val detailScroll = ScrollView(this).apply {
+            addView(detailContent); setBackgroundColor(bgColor); isFillViewport = true
+        }
+        fun showDestination(destination: Destination) {
+            titleView.text = destination.title
+            detailContent.removeAllViews()
+            detailContent.addView(destination.pane)
+            backButton.visibility = if (wide) View.GONE else View.VISIBLE
+            overviewScroll.visibility = View.GONE
+            navScroll.visibility = if (wide) View.VISIBLE else View.GONE
+            detailScroll.visibility = View.VISIBLE
+            navRows.forEach { (name, row) ->
+                row.background = rounded(
+                    if (name == destination.title) selectedNavColor else cardColor, dp(12)
+                )
+            }
+        }
+        fun showOverview() {
+            titleView.text = "DroidIME"
+            overviewScroll.visibility = View.VISIBLE
+            navScroll.visibility = if (wide) View.VISIBLE else View.GONE
+            detailScroll.visibility = View.GONE
+            backButton.visibility = View.GONE
+        }
 
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            clipToPadding = false
-            addView(content)
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(horizontalPadding, dp(12), horizontalPadding, dp(12))
             setBackgroundColor(bgColor)
+        }
+        titleView = TextView(this).apply {
+            text = "DroidIME"
+            textSize = 20f
+            setTextColor(headingColor)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        }
+        backButton = TextView(this).apply {
+            text = "‹"
+            textSize = 28f
+            setTextColor(headingColor)
+            setPadding(0, 0, dp(14), 0)
+            contentDescription = "Back to settings overview"
+            visibility = View.GONE
+            setOnClickListener { showOverview() }
+        }
+        topBar.addView(backButton, LinearLayout.LayoutParams(-2, -2, 0f))
+        topBar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val contentArea = FrameLayout(this).apply {
+            if (wide) {
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(navScroll, LinearLayout.LayoutParams(dp(280), -1))
+                    addView(detailScroll, LinearLayout.LayoutParams(0, -1, 1f))
+                })
+            } else {
+                addView(overviewScroll)
+                addView(detailScroll)
+            }
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bgColor)
+            addView(topBar)
+            addView(contentArea, LinearLayout.LayoutParams(-1, 0, 1f))
             setOnApplyWindowInsetsListener { view, insets ->
                 view.setPadding(
-                    0,
-                    insets.systemWindowInsetTop + dp(14),
-                    0,
-                    insets.systemWindowInsetBottom + dp(18)
+                    0, insets.systemWindowInsetTop, 0, insets.systemWindowInsetBottom
                 )
                 insets
             }
         }
-        setContentView(scroll)
-        scroll.requestApplyInsets()
+        setContentView(root)
+        root.requestApplyInsets()
+
+        onSelect = { destination -> showDestination(destination) }
+        if (wide) showDestination(destinations[0]) else showOverview()
     }
 
     override fun onResume() {
@@ -1011,7 +1130,8 @@ class MainActivity : Activity() {
     }
 
     private fun sectionParams() = LinearLayout.LayoutParams(
-        SettingsLayout.contentWidthPx(resources.displayMetrics.widthPixels, resources.displayMetrics.density),
+        if (settingsContentWidth > 0) settingsContentWidth
+        else SettingsLayout.contentWidthPx(resources.displayMetrics.widthPixels, resources.displayMetrics.density),
         -2
     ).apply {
         bottomMargin = dp(13)
