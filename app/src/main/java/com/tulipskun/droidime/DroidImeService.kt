@@ -1337,8 +1337,8 @@ class DroidImeService : InputMethodService() {
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
             listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
-            listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
-            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
+            listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy", true)),
+            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste", true)),
             listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete", true))
         )
     }
@@ -2641,7 +2641,8 @@ class DroidImeService : InputMethodService() {
                 cell.style == KeyStyle.EMOJI_FOOTER) { drawEmojiPanelCell(canvas, cell, colors); return }
             if (cell.style == KeyStyle.EMOJI_SEARCH) { drawEmojiSearchCell(canvas, cell, colors); return }
             if (cell.style == KeyStyle.CLIP || cell.style == KeyStyle.HEADER ||
-                cell.style == KeyStyle.HEADER_CLOSE || cell.style == KeyStyle.SECTION
+                cell.style == KeyStyle.HEADER_CLOSE || cell.style == KeyStyle.SECTION ||
+                (editorPanelVisible && cell.style == KeyStyle.SPECIAL)
             ) {
                 drawClipCell(canvas, cell, colors)
                 return
@@ -3023,6 +3024,7 @@ class DroidImeService : InputMethodService() {
                     "Home" -> "|‹"
                     "End" -> "›|"
                     "Delete" -> "⌫"
+                    "Select all", "Cut", "Copy", "Paste" -> cell.label
                     else -> cell.label
                 }
                 textPaint.textSize = dpf(
