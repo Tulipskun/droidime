@@ -332,6 +332,20 @@ class DroidImeService : InputMethodService() {
         listOf("ฟ", "ห", "ก", "ด", "เ", "้", "่", "า", "ส", "ว", "ง", "ฃ"),
         listOf("ผ", "ป", "แ", "อ", "ิ", "ื", "ท", "ม", "ใ", "ฝ")
     )
+
+    // Corner hints on the Thai keys, matching Gboard's top-row digits and the symbols reachable
+    // through long-press on the other rows. Keys whose only mark is a vowel/tone diacritic have no
+    // corner hint, so they have no long-press replacement.
+    private val thaiHints = mapOf(
+        "ๅ" to "1", "/" to "2", "_" to "3", "ภ" to "4", "ถ" to "5",
+        "ค" to "6", "ต" to "7", "จ" to "8", "ข" to "9", "ช" to "0",
+        "ๆ" to "=", "ไ" to "@", "ำ" to "#", "พ" to "$", "ะ" to "-",
+        "ร" to "&", "น" to "-", "ย" to "+", "บ" to "(", "ล" to ")",
+        "ฟ" to "\\", "ห" to "%", "ก" to "*", "ด" to "\"", "เ" to "'",
+        "่" to "|", "า" to ":", "ส" to ";", "ว" to "!", "ง" to "?", "ฃ" to "/",
+        "ป" to "[", "แ" to "]", "อ" to "{", "ิ" to "}",
+        "ท" to "~", "ม" to "^", "ใ" to "<", "ฝ" to ">"
+    )
     private val thaiShift = mapOf(
         "ๅ" to "+", "/" to "๑", "_" to "๒", "ภ" to "๓", "ถ" to "๔",
         "ุ" to "ู", "ึ" to "฿", "ค" to "๕", "ต" to "๖", "จ" to "๗", "ข" to "๘", "ช" to "๙",
@@ -694,6 +708,9 @@ class DroidImeService : InputMethodService() {
             if (tail != thaiComposingText) thaiComposingText = ""
         }
         updateSuggestions()
+        // The editing panel swaps Select all/Cut from the live selection, which changes
+        // asynchronously through this callback rather than inside editorAction.
+        if (editorPanelVisible) keyboardView?.rebuild()
     }
 
     private fun updateSuggestions() {
@@ -1247,25 +1264,29 @@ class DroidImeService : InputMethodService() {
             "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = editorSelecting)
             "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP, selecting = editorSelecting)
             "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN, selecting = editorSelecting)
-            "Select" -> { editorSelecting = !editorSelecting; renderKeyboard() }
+            "Select" -> editorSelecting = !editorSelecting
             "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME, selecting = editorSelecting)
             "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END, selecting = editorSelecting)
             "Select all" -> connection.performContextMenuAction(android.R.id.selectAll)
             "Delete" -> deleteOne()
             "Copy" -> connection.performContextMenuAction(android.R.id.copy)
+            "Cut" -> connection.performContextMenuAction(android.R.id.cut)
             "Paste" -> connection.performContextMenuAction(android.R.id.paste)
             "Undo" -> sendCtrl(KeyEvent.KEYCODE_Z)
             "Redo" -> sendCtrl(KeyEvent.KEYCODE_Y)
         }
+        if (editorPanelVisible) renderKeyboard()
         afterTextChanged()
     }
 
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
         fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
+        val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
+        val topAction = if (hasSelection) action("Cut") else action("Select all")
         return listOf(
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
-            listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to action("Select all")),
+            listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
             listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
             listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
             listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete"))
@@ -1987,7 +2008,7 @@ class DroidImeService : InputMethodService() {
             }
             val hint = when {
                 !showHints || symbols || numberPad -> null
-                language == Language.THAI -> if (shifted) null else thaiShift[key]
+                language == Language.THAI -> if (shifted) null else thaiHints[key]
                 else -> englishHints[key]
             }
             val longPress = hint?.let { value: String -> { typeText(value) } }
@@ -2171,6 +2192,7 @@ class DroidImeService : InputMethodService() {
         private fun layoutEditorRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             val editorCells = rows.flatten().mapNotNull { it.second }.distinct()
             val byLabel = editorCells.associateBy { it.label }
+            val hasSelection = editorCells.any { it.label == "Cut" }
             val left = dpf(10f)
             val right = (width - dpf(10f)).coerceAtLeast(left + 1f)
             val gap = dpf(7f)
@@ -2206,7 +2228,7 @@ class DroidImeService : InputMethodService() {
             place("Select", 1, 1)
             place("↓", 1, 2)
             place("→", 2, 0, 3)
-            place("Select all", 3, 0)
+            place(if (hasSelection) "Cut" else "Select all", 3, 0)
             place("Copy", 3, 1)
             place("Paste", 3, 2)
             val footerGap = gap

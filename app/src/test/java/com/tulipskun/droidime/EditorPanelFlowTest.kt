@@ -122,4 +122,24 @@ class EditorPanelFlowTest {
         assertEquals(0, view.selectionStart)
         assertEquals(5, view.selectionEnd)
     }
+
+    @Test fun editorPanelSwapsSelectAllForCutWhenTextIsSelected() {
+        val (service, _) = editor()
+        invoke(service, "editorAction", "Select all")
+        val rows = invoke(service, "buildEditorRows") as List<List<Pair<Float, Any?>>>
+        assertEquals("Cut", getField(rows[1][3].second!!, "label"))
+
+        invoke(service, "editorAction", "←")
+        val cleared = invoke(service, "buildEditorRows") as List<List<Pair<Float, Any?>>>
+        assertEquals("Select all", getField(cleared[1][3].second!!, "label"))
+    }
+
+    @Test fun cutActionRemovesSelectedText() {
+        val (service, view) = editor()
+        invoke(service, "editorAction", "Select all")
+        invoke(service, "editorAction", "Cut")
+        assertEquals("", view.text.toString())
+        val manager = service.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        assertEquals("hello", manager.primaryClip?.getItemAt(0)?.text?.toString())
+    }
 }

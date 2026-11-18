@@ -46,6 +46,18 @@ class LogicTest {
         return ctor.newInstance(id, text, pinned, 0L)
     }
 
+    @Test fun thaiCornerHintsMatchGboardLongPressSymbols() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val hints = getField(service, "thaiHints") as Map<*, *>
+        assertEquals("1", hints["ๅ"])
+        assertEquals("0", hints["ช"])
+        assertEquals("=", hints["ๆ"])
+        assertEquals("&", hints["ร"])
+        assertEquals("!", hints["ว"])
+        assertEquals("<", hints["ใ"])
+        assertFalse("vowel-only keys have no long-press hint", hints.containsKey("ุ"))
+    }
+
     @Test fun clipPreviewCollapsesWhitespace() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         assertEquals("a b c", call(service, "clipPreview", "a\n\nb  c") as String)
