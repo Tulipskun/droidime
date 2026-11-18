@@ -229,7 +229,13 @@ class DroidImeService : InputMethodService() {
         val enter: Int,
         val text: Int,
         val enterText: Int,
-        val hint: Int
+        val hint: Int,
+        // Gboard uses a different surface for its panels than for the letter keys.
+        val panel: Int,
+        val panelKey: Int,
+        val panelFunction: Int,
+        val panelText: Int,
+        val panelDisabled: Int
     )
 
     // Exact values sampled from Gboard's shipped keyboard (light and dark screenshots).
@@ -241,7 +247,12 @@ class DroidImeService : InputMethodService() {
         enter = Color.rgb(189, 221, 220),
         text = Color.rgb(35, 39, 39),
         enterText = Color.rgb(36, 65, 65),
-        hint = Color.rgb(102, 102, 102)
+        hint = Color.rgb(102, 102, 102),
+        panel = Color.rgb(236, 239, 241),
+        panelKey = Color.WHITE,
+        panelFunction = Color.rgb(207, 216, 220),
+        panelText = Color.rgb(32, 33, 36),
+        panelDisabled = Color.rgb(95, 99, 104)
     )
     private val darkPalette = Palette(
         background = Color.rgb(20, 24, 24),
@@ -251,7 +262,12 @@ class DroidImeService : InputMethodService() {
         enter = Color.rgb(19, 48, 48),
         text = Color.rgb(218, 221, 220),
         enterText = Color.rgb(147, 176, 175),
-        hint = Color.rgb(147, 150, 149)
+        hint = Color.rgb(147, 150, 149),
+        panel = Color.rgb(31, 31, 31),
+        panelKey = Color.rgb(57, 57, 57),
+        panelFunction = Color.rgb(71, 71, 71),
+        panelText = Color.rgb(226, 226, 226),
+        panelDisabled = Color.rgb(108, 108, 108)
     )
 
     private var suggestions: List<Suggestion> = emptyList()
@@ -1807,6 +1823,26 @@ class DroidImeService : InputMethodService() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    // Gboard scales key-label text by width class and orientation (REA dimen 0x7f070956:
+    // 19dp base, 22@sw350, 25@sw400, 26@sw600, 16.5dp in landscape). Our letter keys were a fixed
+    // 26dp, which made narrow screens cramped.
+    private fun keyLabelTextDp(): Float {
+        val dm = resources.displayMetrics
+        val widthDp = dm.widthPixels / dm.density
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        return if (landscape) {
+            // REA: values-land uses 16.5dp; only the wide-tablet landscape override grows again.
+            if (widthDp >= 768f) 26f else 16.5f
+        } else {
+            when {
+                widthDp >= 600f -> 26f
+                widthDp >= 400f -> 25f
+                widthDp >= 350f -> 22f
+                else -> 19f
+            }
+        }
+    }
+
     private fun dpf(value: Float): Float = value * resources.displayMetrics.density
 
     // A single drawn key. The rect is filled in during layout; null spacer slots have no cell.
@@ -2029,7 +2065,6 @@ class DroidImeService : InputMethodService() {
             // Gboard's rightmost strip button expands the toolbar; it opens text editing here.
             val expand = tool(ToolIcon.EXPAND, "Text editing")
                 .withAction { openEditorPanel() }
-                .withLongAction { copySelectionTool() }
             val grid = tool(ToolIcon.GRID, "Choose keyboard")
                 .withAction { showKeyboardPicker() }
             return listOf(grid) + middle + expand
@@ -2051,19 +2086,22 @@ class DroidImeService : InputMethodService() {
                 rows.add(listOf(1f to emptyCell()))
                 return rows
             }
-            // Gboard lays clip cards out two per row.
+            // Gboard reads its column count from a theme attribute: 2 on phones, more on wide
+            // windows. Use the same width class as the key label rules.
+            val columns = if (resources.displayMetrics.widthPixels /
+                resources.displayMetrics.density >= 600f) 3 else 2
             if (recent.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("RECENT")))
-                recent.chunked(2).forEach { group ->
+                recent.chunked(columns).forEach { group ->
                     rows.add(group.map { clip -> 1f to clipCell(clip.id) } +
-                        List(2 - group.size) { 1f to null })
+                        List(columns - group.size) { 1f to null })
                 }
             }
             if (pinned.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell("PINNED")))
-                pinned.chunked(2).forEach { group ->
+                pinned.chunked(columns).forEach { group ->
                     rows.add(group.map { clip -> 1f to clipCell(clip.id) } +
-                        List(2 - group.size) { 1f to null })
+                        List(columns - group.size) { 1f to null })
                 }
             }
             return rows
@@ -2134,7 +2172,10 @@ class DroidImeService : InputMethodService() {
             val toolMode = middle[0].style == KeyStyle.TOOLBAR
             val pitch = w * 0.1731f
             val innerLeft = if (toolMode) w * 0.0667f + pitch * 0.5f else w * 0.0861f
-            val innerRight = if (toolMode) w * 0.0667f + pitch * (middle.size + 0.5f) else w * 0.9083f
+            // Align the expand cell's hit area with its drawn circle (0.9317w minus its radius)
+            // so no sliver of the visible button falls into the neighbouring suggestion slot.
+            val innerRight = if (toolMode) w * 0.0667f + pitch * (middle.size + 0.5f)
+            else w * 0.9317f - half
             first.rect.set(w * 0.0667f - half, centerY - half, w * 0.0667f + half, centerY + half)
             first.touchRect.set(0f, 0f, innerLeft, bandH)
             last.rect.set(w * 0.9317f - half, centerY - half, w * 0.9317f + half, centerY + half)
@@ -2420,9 +2461,9 @@ class DroidImeService : InputMethodService() {
         // of the hit list so the popup wins over any card it covers.
         private fun layoutClipRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             val headerH = dpf(CLIP_HEADER_DP)
-            val sectionH = dpf(26f)
-            val cardH = dpf(48f)
-            val gap = dpf(6f)
+            val sectionH = dpf(20f)
+            val cardH = dpf(44f)
+            val gap = dpf(4f)
             var top = dpf(CLIP_PAD_TOP_DP)
             rows.forEachIndexed { index, row ->
                 val first = row.firstOrNull { it.second != null }?.second
@@ -2434,7 +2475,7 @@ class DroidImeService : InputMethodService() {
                 }
                 val bottom = top + h
                 val totalWeight = row.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
-                val leftEdge = dpf(8f); val usableWidth = (width - dpf(16f)).coerceAtLeast(1f)
+                val leftEdge = dpf(4f); val usableWidth = (width - dpf(8f)).coerceAtLeast(1f)
                 var left = leftEdge
                 row.forEach { (weight, cell) ->
                     val right = left + usableWidth * weight / totalWeight
@@ -2689,7 +2730,7 @@ class DroidImeService : InputMethodService() {
             val hint = cell.hint
             if (hint != null) {
                 hintPaint.color = colors.hint
-                hintPaint.textSize = dpf(10.5f)
+                hintPaint.textSize = dpf((keyLabelTextDp() * 0.4f).coerceAtLeast(8f))
                 // Gboard puts the hint's baseline ~11dp below the key top, 4dp in from the right.
                 canvas.drawText(hint, cell.rect.right - dp(4), cell.rect.top + dpf(11f), hintPaint)
             }
@@ -2705,7 +2746,7 @@ class DroidImeService : InputMethodService() {
                 label == MORE_SYMBOLS -> 15.5f
                 style == KeyStyle.ENTER -> 15f
                 label.length > 1 -> 14f
-                else -> 26f
+                else -> keyLabelTextDp()
             }
             textPaint.color = ink
             textPaint.typeface = if (isPageLabel || style == KeyStyle.ENTER) mediumFace else Typeface.DEFAULT
@@ -2841,12 +2882,13 @@ class DroidImeService : InputMethodService() {
         // pinned clips carry a pin marker at the right edge and selected ones a check circle.
         // The long-press menu is a floating popup drawn over the panel, as in Gboard.
         private fun drawClipCell(canvas: Canvas, cell: Cell, colors: Palette) {
-            val ink = colors.text
+            val ink = if (editorPanelVisible || clipPanelVisible) colors.panelText else colors.text
             if (cell.style == KeyStyle.SECTION) {
                 // A small muted label above a group of clips; it is not itself tappable-looking.
                 textPaint.color = colors.hint
                 textPaint.typeface = Typeface.DEFAULT
                 textPaint.textSize = dpf(12f)
+                textPaint.color = colors.panelDisabled
                 textPaint.textAlign = Paint.Align.LEFT
                 val m = textPaint.fontMetrics
                 canvas.drawText(
@@ -2932,14 +2974,14 @@ class DroidImeService : InputMethodService() {
             if (!emptyClip) {
                 shape.setColor(when {
                     cell === pressed -> colors.active
-                    cell.style == KeyStyle.SPECIAL -> colors.special
-                    else -> colors.key
+                    cell.style == KeyStyle.SPECIAL -> colors.panelFunction
+                    else -> colors.panelKey
                 })
                 shape.setBounds(
                     cell.rect.left.toInt(), (cell.rect.top + dpf(2f)).toInt(),
                     cell.rect.right.toInt(), (cell.rect.bottom - dpf(2f)).toInt()
                 )
-                shape.cornerRadius = dpf(9f)
+                shape.cornerRadius = dpf(8f)
                 shape.draw(canvas)
             }
             if (emptyClip) {
@@ -3029,7 +3071,7 @@ class DroidImeService : InputMethodService() {
             if (editorPanelVisible) {
                 val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
                 if (!hasSelection && cell.label in setOf("Select", "Select all", "Copy")) {
-                    textPaint.color = colors.hint
+                    textPaint.color = colors.panelDisabled
                 }
                 val display = when (cell.label) {
                     "Home" -> "|‹"
@@ -3051,7 +3093,7 @@ class DroidImeService : InputMethodService() {
                 return
             }
             val text = cell.label
-            textPaint.textSize = dpf(15f)
+            textPaint.textSize = dpf(14f)
             val checkboxMode = clipEdit && cell.clipId != null
             val textLeft = cell.rect.left + dpf(if (checkboxMode) 44f else 16f)
             val maxW = (cell.rect.right - textLeft - dpf(if (checkboxMode) 12f else 40f))
@@ -3329,7 +3371,8 @@ class DroidImeService : InputMethodService() {
                     if (panelOpen()) {
                         val cell = cellAt(event.x, event.y)
                         if (clipSwipeCell != null &&
-                            kotlin.math.abs(event.x - clipSwipeStartX) > dpf(60f)
+                            kotlin.math.abs(event.x - clipSwipeStartX) >
+                                (clipSwipeCell?.rect?.width() ?: width.toFloat()) * 0.5f
                         ) {
                             clipSwipeHandled = true
                             cancelPendingLongPress()
@@ -3437,8 +3480,14 @@ class DroidImeService : InputMethodService() {
                     val cell = pressed
                     pressed = null
                     invalidate()
+                    // Compare by geometry, not object identity: a mid-gesture rebuild replaces
+                    // every Cell instance, which made a genuine tap silently fail.
+                    val releasedCell = cellAt(event.x, event.y)
                     if (cell != null && !longPressFired && !spaceDragMoved && !cell.isDelete &&
-                        cellAt(event.x, event.y) === cell) {
+                        releasedCell != null &&
+                        releasedCell.rect == cell.rect &&
+                        releasedCell.label == cell.label
+                    ) {
                         cell.action()
                     }
                     spaceDragStartCursor = -1
