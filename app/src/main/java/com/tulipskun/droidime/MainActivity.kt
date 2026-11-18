@@ -559,8 +559,9 @@ class MainActivity : Activity() {
         })
         logCard.addView(actionButton("View / copy crash log") { showCrashLog() })
 
-        // A single ordered list with small category labels keeps the long settings page scannable.
-        fun category(label: String) {
+        // The page has two distinct audiences: keyboard users and MCP/remote-control users.
+        // Keep each in one block so neither has to scroll through the other's settings.
+        fun category(label: String, caption: String) {
             content.addView(TextView(this).apply {
                 text = label
                 textSize = 12f
@@ -568,31 +569,31 @@ class MainActivity : Activity() {
                     "sans-serif-medium", android.graphics.Typeface.NORMAL
                 )
                 setTextColor(mutedColor)
-                setPadding(dp(4), dp(14), 0, dp(7))
+                setPadding(dp(4), dp(14), 0, dp(2))
+            })
+            content.addView(TextView(this).apply {
+                text = caption
+                textSize = 12f
+                setTextColor(mutedColor)
+                setPadding(dp(4), 0, 0, dp(7))
             })
         }
 
-        category("SETUP")
+        category("KEYBOARD", "Layout, languages, typing, dictionary and app updates")
         content.addView(setupCard, sectionParams())
         content.addView(languageCard, sectionParams())
         content.addView(testCard, sectionParams())
-
-        category("APPEARANCE & TYPING")
         content.addView(sizeCard, sectionParams())
         content.addView(themeCard, sectionParams())
         content.addView(typingCard, sectionParams())
         content.addView(feedbackCard, sectionParams())
-
-        category("REMOTE CONTROL")
-        content.addView(remoteCard, sectionParams())
-
-        category("TOOLS")
         content.addView(dictionaryCard, sectionParams())
         content.addView(learningCard, sectionParams())
-
-        category("SUPPORT")
         content.addView(updateCard, sectionParams())
         content.addView(logCard, sectionParams())
+
+        category("MCP · REMOTE CONTROL", "Shizuku, device name, Cloudflare Tunnel and webhook")
+        content.addView(remoteCard, sectionParams())
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
