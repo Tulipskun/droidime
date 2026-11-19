@@ -6,4 +6,14 @@
     <string name="clip_done">เสร็จ</string>
     <string name="clip_delete">ลบ</string>
     <string name="editor_title">การแก้ไขข้อความ</string>
+    <string name="editor_select">เลือก</string>
+    <string name="editor_select_all">เลือกทั้งหมด</string>
+    <string name="editor_cut">ตัด</string>
+    <string name="editor_copy">คัดลอก</string>
+    <string name="editor_paste">วาง</string>
+    <string name="editor_home">ขึ้นบรรทัดแรก</string>
+    <string name="editor_end">ลงบรรทัดสุดท้าย</string>
+    <string name="editor_delete">ลบ</string>
+    <string name="clip_pin">ปักหมุด</string>
+    <string name="clip_unpin">เลิกปักหมุด</string>
 </resources>

@@ -27,8 +27,10 @@ import android.os.VibratorManager
 import android.text.InputType
 import android.text.Layout
 import android.text.StaticLayout
+import android.text.Editable
 import android.text.TextPaint
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SoundEffectConstants
@@ -313,7 +315,7 @@ class DroidImeService : InputMethodService() {
     private val recentEmojis = ArrayList<String>()
     private var clipboardListening = false
     private var clipMenuId: String? = null
-    private var clipSelection: String? = null
+    private val clipSelection = LinkedHashSet<String>()
     private var clipEdit = false
 
     private class Clip(val id: String, val text: String, val pinned: Boolean, val at: Long) {
@@ -336,7 +338,8 @@ class DroidImeService : InputMethodService() {
     // True only when the user tapped Shift, not when auto-caps turned it on. Shift+Space switches
     // language, but auto-capitalisation must not do that on the first space of a sentence.
     private var shiftManual = false
-    private var undoText: String? = null
+    private val undoStack = ArrayDeque<String>()
+    private var deletedClip: Pair<Clip, Int>? = null
     private val suppressedWords = HashSet<String>()
     private var shiftLocked = false
     private var lastShiftTap = 0L
@@ -541,7 +544,7 @@ class DroidImeService : InputMethodService() {
         }
         saveClips()
         // A copy that arrives while the panel is closed should not silently become a suggestion.
-        if (system) clipSelection = null
+        if (system) clipSelection.clear()
     }
 
     private fun saveClips() {
@@ -630,7 +633,7 @@ class DroidImeService : InputMethodService() {
         super.onStartInputView(info, restarting)
         setClipboardListening(true)
         // The panel belongs to one editing session: leaving the field closes it.
-        clipSelection = null
+        clipSelection.clear()
         clipMenuId = null
         if (keyboardView == null) {
             shifted = false
@@ -952,12 +955,14 @@ class DroidImeService : InputMethodService() {
     // ---- Glide typing -------------------------------------------------------------------------
 
     private fun clipOpen(): Boolean = preferences.getBoolean("clipboard", true) && clipPanelVisible
-    private fun panelOpen(): Boolean = clipOpen() || emojiPanelVisible || editorPanelVisible
+    private fun panelOpen(): Boolean =
+        clipOpen() || emojiPanelVisible || editorPanelVisible || accessPointsVisible
 
     // The panel replaces the suggestion strip and the letter rows, so the keys that are drawn
     // while it is open are not glide letters.
     private var clipPanelVisible = false
     private var emojiPanelVisible = false
+    private var accessPointsVisible = false
     private var editorPanelVisible = false
     private var editorSelecting = false
     private var emojiSearchQuery = ""
@@ -1145,7 +1150,7 @@ class DroidImeService : InputMethodService() {
 
     private fun applySuggestion(suggestion: Suggestion) {
         val connection = currentInputConnection ?: return
-        undoText = null
+        undoStack.clear()
         val context = connection.getTextBeforeCursor(64, 0)?.toString()?.let { NextWordModel.context(it) }
         finishThaiComposition()
         if (glideCommitted != null) {
@@ -1272,7 +1277,8 @@ class DroidImeService : InputMethodService() {
     private fun openClipboardPanel() {
         emojiPanelVisible = false
         editorPanelVisible = false
-        clipSelection = null
+        accessPointsVisible = false
+        clipSelection.clear()
         clipMenuId = null
         clipPanelVisible = true
         renderKeyboard()
@@ -1284,7 +1290,7 @@ class DroidImeService : InputMethodService() {
         putClipOnClipboard(clip.text)
         connection.commitText(clip.text, 1)
         clipMenuId = null
-        clipSelection = null
+        clipSelection.clear()
         afterTextChanged()
     }
 
@@ -1299,9 +1305,19 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun deleteClip(id: String) {
+        val index = clips.indexOfFirst { it.id == id }
+        if (index >= 0) deletedClip = clips[index] to index
         removeClip(id)
         if (clipMenuId == id) clipMenuId = null
-        if (clipSelection == id) clipSelection = null
+        clipSelection.remove(id)
+        renderKeyboard()
+    }
+
+    private fun restoreClip() {
+        val (clip, index) = deletedClip ?: return
+        clips.add(index.coerceAtMost(clips.size), clip)
+        deletedClip = null
+        saveClips()
         renderKeyboard()
     }
 
@@ -1319,13 +1335,13 @@ class DroidImeService : InputMethodService() {
     // Edit mode is the "select many" state: tapping clips toggles them and the header button
     // deletes the selection, the way Gboard's clipboard edit mode does.
     private fun toggleClipSelection(id: String) {
-        clipSelection = if (clipSelection == id) null else id
+        if (!clipSelection.remove(id)) clipSelection.add(id)
         renderKeyboard()
     }
 
     private fun toggleClipEdit() {
         clipEdit = !clipEdit
-        clipSelection = null
+        clipSelection.clear()
         clipMenuId = null
         renderKeyboard()
     }
@@ -1333,6 +1349,7 @@ class DroidImeService : InputMethodService() {
     private fun openEditorPanel() {
         clipPanelVisible = false
         emojiPanelVisible = false
+        accessPointsVisible = false
         editorSelecting = false
         editorPanelVisible = true
         renderKeyboard()
@@ -1368,6 +1385,19 @@ class DroidImeService : InputMethodService() {
         afterTextChanged()
     }
 
+    private var editorRepeat: Runnable? = null
+
+    private fun startEditorRepeat(key: String) {
+        val repeat = object : Runnable {
+            override fun run() {
+                editorAction(key)
+                settingsHandler.postDelayed(this, 60L)
+            }
+        }
+        editorRepeat = repeat
+        repeat.run()
+    }
+
     private fun editorAction(label: String) {
         val connection = currentInputConnection ?: return
         when (label) {
@@ -1393,22 +1423,37 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
-        fun action(label: String, style: KeyStyle = KeyStyle.CLIP) =
-            Cell(label, style, null, action = { editorAction(label) })
+        // The display label follows the system locale while the action key stays stable.
+        fun action(
+            key: String, label: String = key, style: KeyStyle = KeyStyle.CLIP, repeat: Boolean = false
+        ) = Cell(
+            label, style, null, action = { editorAction(key) },
+            longAction = if (repeat) ({ startEditorRepeat(key) }) else null,
+            actionKey = key
+        )
         val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
+        val topKey = if (hasSelection) "Cut" else "Select all"
+        val topLabel = when (topKey) {
+            "Cut" -> resources.getString(R.string.editor_cut)
+            else -> resources.getString(R.string.editor_select_all)
+        }
         // Gboard tints the right-hand action column and Delete with its function-key colour.
-        val topAction = action(if (hasSelection) "Cut" else "Select all", KeyStyle.SPECIAL)
+        val topAction = action(topKey, topLabel, KeyStyle.SPECIAL)
         // Gboard's text-editing panel: tall arrow keys, a select/copy column and Home/End/Delete.
         return listOf(
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
-            listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
-            listOf(1f to null, 1f to action("Select"), 1f to null,
-                1f to action("Copy", KeyStyle.SPECIAL)),
-            listOf(1f to null, 1f to action("↓"), 1f to action("→"),
-                1f to action("Paste", KeyStyle.SPECIAL)),
-            listOf(1.5f to action("Home"), 1.5f to action("End"),
-                1f to action("Delete", KeyStyle.SPECIAL))
+            listOf(1f to action("←", repeat = true), 1f to action("↑", repeat = true),
+                1f to null, 1f to topAction),
+            listOf(1f to null,
+                1f to action("Select", resources.getString(R.string.editor_select)), 1f to null,
+                1f to action("Copy", resources.getString(R.string.editor_copy), KeyStyle.SPECIAL)),
+            listOf(1f to null, 1f to action("↓", repeat = true), 1f to action("→", repeat = true),
+                1f to action("Paste", resources.getString(R.string.editor_paste), KeyStyle.SPECIAL)),
+            listOf(1.5f to action("Home", resources.getString(R.string.editor_home), repeat = true),
+                1.5f to action("End", resources.getString(R.string.editor_end), repeat = true),
+                1f to action("Delete", resources.getString(R.string.editor_delete),
+                    KeyStyle.SPECIAL, repeat = true))
         )
     }
 
@@ -1488,6 +1533,19 @@ class DroidImeService : InputMethodService() {
         manager.showInputMethodPicker()
     }
 
+    private fun openAccessPoints() {
+        clipPanelVisible = false
+        emojiPanelVisible = false
+        editorPanelVisible = false
+        accessPointsVisible = true
+        renderKeyboard()
+    }
+
+    private fun closeAccessPoints() {
+        accessPointsVisible = false
+        renderKeyboard()
+    }
+
     private fun openSettings() {
         val intent = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1496,7 +1554,7 @@ class DroidImeService : InputMethodService() {
 
     // Toolbar emoji key: tap types a comma, long-press opens the picker (not built yet).
     private fun showEmoji() {
-        clipPanelVisible = false; editorPanelVisible = false
+        clipPanelVisible = false; editorPanelVisible = false; accessPointsVisible = false
         emojiPanelVisible = true
         emojiSearchQuery = ""
         emojiCategory = if (recentEmojis.isNotEmpty()) EmojiCategory.RECENT else EmojiCategory.FACES
@@ -1509,14 +1567,19 @@ class DroidImeService : InputMethodService() {
             setSingleLine(true)
             setText(emojiSearchQuery)
         }
+        // Gboard filters as the user types instead of waiting for a Search button.
+        field.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                emojiSearchQuery = s?.toString()?.trim().orEmpty()
+                renderKeyboard()
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
         val dialog = AlertDialog.Builder(this)
             .setTitle("Search emoji")
             .setView(field)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Search") { _, _ ->
-                emojiSearchQuery = field.text.toString().trim()
-                renderKeyboard()
-            }
+            .setPositiveButton("Done", null)
             .create()
 
         val imeToken = window.window?.decorView?.windowToken ?: return
@@ -1528,6 +1591,18 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun emojiMatchesQuery(emoji: String, query: String): Boolean {
+        if (query.isBlank()) return true
+        // Common spoken keywords, which Unicode names alone do not cover.
+        val q = query.lowercase()
+        val aliases = mapOf(
+            "happy" to setOf("😀", "😃", "😄", "😂", "🥰"),
+            "heart" to setOf("❤️", "🧡", "💛", "💚", "💙", "💜"),
+            "love" to setOf("❤️", "🥰", "😍"),
+            "like" to setOf("👍"), "thumbs" to setOf("👍"),
+            "cat" to setOf("🐱", "🐈"), "dog" to setOf("🐶", "🐕"),
+            "pizza" to setOf("🍕"), "fire" to setOf("🔥")
+        )
+        if (aliases[q]?.contains(emoji) == true) return true
         val names = StringBuilder()
         var offset = 0
         while (offset < emoji.length) {
@@ -1537,6 +1612,21 @@ class DroidImeService : InputMethodService() {
         }
         return names.contains(query, ignoreCase = true)
     }
+    private val emojiToneVariants = mapOf(
+        "👍" to listOf("👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿"),
+        "👋" to listOf("👋🏻", "👋🏼", "👋🏽", "👋🏾", "👋🏿"),
+        "👩" to listOf("👩🏻", "👩🏼", "👩🏽", "👩🏾", "👩🏿"),
+        "👨" to listOf("👨🏻", "👨🏼", "👨🏽", "👨🏾", "👨🏿"),
+        "🧑" to listOf("🧑🏻", "🧑🏼", "🧑🏽", "🧑🏾", "🧑🏿"),
+        "👶" to listOf("👶🏻", "👶🏼", "👶🏽", "👶🏾", "👶🏿")
+    )
+    private var emojiToneIndex = 0
+
+    private fun insertEmojiWithTone(emoji: String) {
+        val variants = emojiToneVariants[emoji] ?: listOf(emoji)
+        insertEmoji(variants[emojiToneIndex++ % variants.size])
+    }
+
     private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
     private fun insertEmoji(emoji: String) {
         currentInputConnection?.commitText(emoji, 1)
@@ -1544,7 +1634,7 @@ class DroidImeService : InputMethodService() {
         recentEmojis.add(0, emoji)
         while (recentEmojis.size > 32) recentEmojis.removeAt(recentEmojis.lastIndex)
         preferences.edit().putString(RECENT_EMOJI_PREF, recentEmojis.joinToString("|")).apply()
-        closeEmojiPanel()
+        // Gboard stays on the emoji panel so several can be inserted in a row.
         afterTextChanged()
     }
 
@@ -1722,11 +1812,11 @@ class DroidImeService : InputMethodService() {
             // Gboard: Shift+Space switches between enabled keyboards. Auto-caps never does this.
             shiftManual = false
             shifted = false
-            undoText = null
+            undoStack.clear()
             switchLanguage()
             return
         }
-        undoText = null
+        undoStack.clear()
         if (symbols) {
             // Like Gboard, a space typed on a symbol page drops back to the letters.
             symbols = false
@@ -1765,7 +1855,7 @@ class DroidImeService : InputMethodService() {
         glideAlternatives = emptyList()
         val selection = connection.getSelectedText(0)
         if (!selection.isNullOrEmpty()) {
-            undoText = selection.toString()
+            undoStack.addLast(selection.toString())
             connection.commitText("", 1)
             afterTextChanged()
             return
@@ -1773,7 +1863,7 @@ class DroidImeService : InputMethodService() {
         val before = connection.getTextBeforeCursor(512, 0)?.toString().orEmpty()
         val start = TextDeletion.previousWordStart(before)
         if (start < before.length) {
-            undoText = before.substring(start)
+            undoStack.addLast(before.substring(start))
             connection.deleteSurroundingText(before.length - start, 0)
             afterTextChanged()
         }
@@ -1789,7 +1879,7 @@ class DroidImeService : InputMethodService() {
         ) {
             val start = TextDeletion.previousClusterStart(composing)
             val remaining = composing.substring(0, start)
-            undoText = composing.substring(start)
+            undoStack.addLast(composing.substring(start))
             if (remaining.isEmpty()) connection.commitText("", 1)
             else connection.setComposingText(remaining, 1)
             thaiComposingText = remaining
@@ -1802,7 +1892,7 @@ class DroidImeService : InputMethodService() {
         finishThaiComposition()
         val tail = glideCommitted
         if (tail != null && connection.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
-            undoText = tail
+            undoStack.addLast(tail)
             connection.deleteSurroundingText(tail.length, 0)
             glideCommitted = null
             glideAlternatives = emptyList()
@@ -1813,13 +1903,13 @@ class DroidImeService : InputMethodService() {
         glideAlternatives = emptyList()
         val selection = connection.getSelectedText(0)
         if (!selection.isNullOrEmpty()) {
-            undoText = selection.toString()
+            undoStack.addLast(selection.toString())
             connection.commitText("", 1)
         } else {
             val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
             val start = TextDeletion.previousClusterStart(before)
             if (start < before.length) {
-                undoText = before.substring(start)
+                undoStack.addLast(before.substring(start))
                 connection.deleteSurroundingText(before.length - start, 0)
             }
         }
@@ -1827,12 +1917,11 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun restoreUndo() {
-        val text = undoText ?: return
+        val text = undoStack.removeLastOrNull() ?: return
         // Finish any live Thai composing region before restoring, otherwise the deleted fragment
         // is appended inside the composition and the editor can silently drop it.
         finishThaiComposition()
         currentInputConnection?.commitText(text, 1)
-        undoText = null
         afterTextChanged()
     }
 
@@ -1910,16 +1999,19 @@ class DroidImeService : InputMethodService() {
         val glyph: KeyGlyph? = null,
         val pill: Boolean = false,
         val clipId: String? = null,
+        val actionKey: String? = null,
         val rect: RectF = RectF(),
         // Gap-free hit area: tiles the whole keyboard so no tap lands on dead space.
         val touchRect: RectF = RectF()
     ) {
         fun withAction(action: () -> Unit): Cell = Cell(
-            label, style, hint, action, longAction, icon, emojiFace, isDelete, glyph, pill, clipId
+            label, style, hint, action, longAction, icon, emojiFace, isDelete, glyph, pill,
+            clipId, actionKey
         )
 
         fun withLongAction(action: () -> Unit): Cell = Cell(
-            label, style, hint, this.action, action, icon, emojiFace, isDelete, glyph, pill, clipId
+            label, style, hint, this.action, action, icon, emojiFace, isDelete, glyph, pill,
+            clipId, actionKey
         )
 
         val contentDescription: String = describe(label, style)
@@ -1976,6 +2068,7 @@ class DroidImeService : InputMethodService() {
         private var clipSwipeCell: Cell? = null
         private var clipSwipeHandled = false
         private var clipSwipeDx = 0f
+        private var clipDragStartY = -1f
         private var glideStartCell: Cell? = null
         private var glideActive = false
         private var glideLength = 0f
@@ -2063,6 +2156,7 @@ class DroidImeService : InputMethodService() {
 
         // Each row is a list of (weight, cell) slots; a null cell is an indent spacer.
         private fun buildRows(): List<List<Pair<Float, Cell?>>> {
+            if (accessPointsVisible) return buildAccessPointRows()
             if (emojiPanelVisible) return buildEmojiRows()
             if (editorPanelVisible) return buildEditorRows()
             if (clipOpen()) return buildClipRows()
@@ -2103,18 +2197,23 @@ class DroidImeService : InputMethodService() {
         private fun stripCells(): List<Cell> {
             fun tool(icon: ToolIcon, name: String): Cell =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
-            val middle: List<Cell> = if (suggestions.isEmpty() && undoText == null) {
+            val middle: List<Cell> = if (suggestions.isEmpty() && undoStack.isEmpty() && deletedClip == null) {
                 // Gboard's toolbar on this device: grid, undo, translate, clipboard, settings, expand.
                 listOf(
-                    tool(ToolIcon.UNDO, "Undo").withAction { sendCtrl(KeyEvent.KEYCODE_Z) },
+                    tool(ToolIcon.UNDO, "Undo").withAction {
+                        if (undoStack.isNotEmpty()) restoreUndo()
+                        else sendCtrl(KeyEvent.KEYCODE_Z)
+                    },
                     tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
                     tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() },
                     tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() }
                 )
             } else {
                 val slots = List(3) { i ->
-                    if (i == 0 && undoText != null) {
-                        Cell("Undo", KeyStyle.SUGGESTION, null, action = { restoreUndo() })
+                    if (i == 0 && (undoStack.isNotEmpty() || deletedClip != null)) {
+                        Cell("Undo", KeyStyle.SUGGESTION, null, action = {
+                            if (deletedClip != null) restoreClip() else restoreUndo()
+                        })
                     } else {
                         val s = suggestions.getOrNull(i)
                         if (s != null) {
@@ -2134,6 +2233,7 @@ class DroidImeService : InputMethodService() {
                 .withAction { openEditorPanel() }
             val grid = tool(ToolIcon.GRID, "Choose keyboard")
                 .withAction { showKeyboardPicker() }
+                .withLongAction { openAccessPoints() }
             return listOf(grid) + middle + expand
         }
 
@@ -2153,8 +2253,8 @@ class DroidImeService : InputMethodService() {
             if (panel.isEmpty()) return rows
             // Gboard reads its column count from a theme attribute: 2 on phones, more on wide
             // windows. Use the same width class as the key label rules.
-            val columns = if (resources.displayMetrics.widthPixels /
-                resources.displayMetrics.density >= 600f) 3 else 2
+            val widthDp = resources.displayMetrics.widthPixels / resources.displayMetrics.density
+            val columns = if (widthDp >= 840f) 4 else if (widthDp >= 600f) 3 else 2
             if (recent.isNotEmpty()) {
                 rows.add(listOf(1f to sectionCell(resources.getString(R.string.clip_recent))))
                 recent.chunked(columns).forEach { group ->
@@ -2185,18 +2285,20 @@ class DroidImeService : InputMethodService() {
 
         private fun clipEditCell(): Cell {
             val label = when {
-                clipEdit && clipSelection != null -> resources.getString(R.string.clip_delete)
+                clipEdit && clipSelection.isNotEmpty() -> resources.getString(R.string.clip_delete)
                 clipEdit -> resources.getString(R.string.clip_done)
                 else -> resources.getString(R.string.clip_edit)
             }
             return Cell(label, KeyStyle.CLIP, null, action = {
-                val selected = clipSelection
-                if (clipEdit && selected != null) deleteClip(selected) else toggleClipEdit()
+                if (clipEdit && clipSelection.isNotEmpty()) {
+                    clipSelection.toList().forEach { deleteClip(it) }
+                    clipSelection.clear()
+                } else toggleClipEdit()
             })
         }
 
         private fun closeClipboardCell(): Cell = Cell("Close", KeyStyle.HEADER_CLOSE, null, action = {
-            clipPanelVisible = false; clipEdit = false; clipSelection = null; clipMenuId = null; renderKeyboard()
+            clipPanelVisible = false; clipEdit = false; clipSelection.clear(); clipMenuId = null; renderKeyboard()
         })
 
         private fun sectionCell(name: String): Cell =
@@ -2210,7 +2312,7 @@ class DroidImeService : InputMethodService() {
         private fun clipCell(id: String): Cell {
             val clip = clips.firstOrNull { found -> found.id == id } ?: return emptyCell()
             val menu = clipMenuId == id
-            val selected = clipSelection == id
+            val selected = id in clipSelection
             return Cell(
                 clipPreview(clip.text), KeyStyle.CLIP, null,
                 clipId = id,
@@ -2417,6 +2519,7 @@ class DroidImeService : InputMethodService() {
                 cells = flat
                 return
             }
+            if (accessPointsVisible) { layoutClipRows(rows, flat); return }
             if (emojiPanelVisible) { layoutEmojiRows(rows, flat); return }
             if (editorPanelVisible) { layoutEditorRows(rows, flat); return }
             if (panelOpen()) { layoutClipRows(rows, flat); return }
@@ -2472,8 +2575,8 @@ class DroidImeService : InputMethodService() {
         // what is left, so a long list still fits and every row stays tappable.
         private fun layoutEditorRows(rows: List<List<Pair<Float, Cell?>>>, flat: MutableList<Cell>) {
             val editorCells = rows.flatten().mapNotNull { it.second }.distinct()
-            val byLabel = editorCells.associateBy { it.label }
-            val hasSelection = editorCells.any { it.label == "Cut" }
+            val byLabel = editorCells.associateBy { it.actionKey ?: it.label }
+            val hasSelection = editorCells.any { (it.actionKey ?: it.label) == "Cut" }
             val left = dpf(10f)
             val right = (width - dpf(10f)).coerceAtLeast(left + 1f)
             val gap = dpf(7f)
@@ -2575,7 +2678,11 @@ class DroidImeService : InputMethodService() {
         // Width follows the longest label so every device shows the full text.
         private fun clipMenuRect(card: RectF): RectF {
             textPaint.textSize = dpf(15f)
-            val labelW = maxOf(textPaint.measureText("Unpin"), textPaint.measureText("Delete"))
+            val labelW = maxOf(
+                textPaint.measureText(resources.getString(R.string.clip_pin)),
+                textPaint.measureText(resources.getString(R.string.clip_unpin)),
+                textPaint.measureText(resources.getString(R.string.clip_delete))
+            )
             val w = (labelW + dpf(72f)).coerceAtLeast(dpf(150f))
             val rowH = dpf(44f)
             val h = rowH * 2f
@@ -2584,6 +2691,23 @@ class DroidImeService : InputMethodService() {
             var top = card.top - dpf(6f) - h
             if (top < dpf(4f)) top = card.bottom + dpf(6f)
             return RectF(cx - w / 2f, top, cx + w / 2f, top + h)
+        }
+
+        private fun buildAccessPointRows(): List<List<Pair<Float, Cell?>>> {
+            fun pill(label: String, action: () -> Unit) =
+                1f to Cell(label, KeyStyle.CLIP, null, action = action)
+            return listOf(
+                listOf(3f to Cell("Tools", KeyStyle.HEADER, null, action = {}),
+                    1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeAccessPoints() })),
+                listOf(pill("Clipboard") { openClipboardPanel() },
+                    pill("Floating") { closeAccessPoints() }),
+                listOf(pill("GIF") { closeAccessPoints() },
+                    pill("Resize") { closeAccessPoints() }),
+                listOf(pill("Stickers") { closeAccessPoints() },
+                    pill("Language") { switchLanguage() }),
+                listOf(pill("Emoji") { showEmoji() },
+                    pill("Voice") { closeAccessPoints() })
+            )
         }
 
         private fun buildEmojiRows(): List<List<Pair<Float, Cell?>>> {
@@ -2600,7 +2724,8 @@ class DroidImeService : InputMethodService() {
             fun addEmojiGrid(items: List<String>) {
                 items.chunked(EMOJI_COLUMNS).forEach { group ->
                     val cells = group.map { emoji ->
-                        1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) })
+                        1f to Cell(emoji, KeyStyle.EMOJI, null, action = { insertEmoji(emoji) },
+                            longAction = { insertEmojiWithTone(emoji) })
                     }
                     rows.add(cells + List(EMOJI_COLUMNS - group.size) { 1f to null })
                 }
@@ -3049,10 +3174,11 @@ class DroidImeService : InputMethodService() {
                 return
             }
             val emptyClip = !editorPanelVisible && cell.clipId == null
-            val selected = cell.clipId != null && clipSelection == cell.clipId
+            val selected = cell.clipId != null && cell.clipId in clipSelection
             if (!emptyClip) {
                 shape.setColor(when {
-                    editorPanelVisible && cell.label == "Select" && editorSelecting -> colors.enter
+                    editorPanelVisible && (cell.actionKey ?: cell.label) == "Select" &&
+                        editorSelecting -> colors.enter
                     cell === pressed -> colors.active
                     cell.style == KeyStyle.SPECIAL -> colors.panelFunction
                     else -> colors.panelKey
@@ -3146,7 +3272,8 @@ class DroidImeService : InputMethodService() {
                 canvas.drawCircle(px, py - dpf(3f), dpf(3.2f), iconStroke)
                 canvas.drawLine(px, py, px, py + dpf(6f), iconStroke)
             }
-            val selectMode = editorPanelVisible && cell.label == "Select" && editorSelecting
+            val actionKey = cell.actionKey ?: cell.label
+            val selectMode = editorPanelVisible && actionKey == "Select" && editorSelecting
             textPaint.color = when {
                 selectMode -> colors.selectionActiveText
                 cell.style == KeyStyle.SPECIAL -> colors.specialText
@@ -3162,26 +3289,51 @@ class DroidImeService : InputMethodService() {
                 val systemClip = try {
                     clipboardManager()?.hasPrimaryClip() == true
                 } catch (_: Exception) { false }
-                val disabled = when (cell.label) {
+                val disabled = when (actionKey) {
                     "Paste" -> !systemClip
                     "Select all" -> emptyField
                     "Cut", "Copy" -> !hasSelection
                     else -> false
                 }
                 if (disabled && !selectMode) textPaint.color = colors.panelDisabled
-                val display = when (cell.label) {
-                    "Home" -> "|‹"
-                    "End" -> "›|"
-                    "Delete" -> "⌫"
-                    "Select all", "Cut", "Copy", "Paste" -> cell.label
-                    else -> cell.label
-                }
-                textPaint.textSize = dpf(
-                    when (cell.label) {
-                        "Home", "End", "Delete" -> 26f
-                        else -> 15f
+                if (actionKey in setOf("Home", "End", "Delete")) {
+                    // Gboard draws these as vector glyphs rather than text.
+                    val cx = cell.rect.centerX()
+                    val cy = cell.rect.centerY()
+                    val arm = dpf(9f)
+                    iconStroke.color = if (actionKey == "Delete" && disabled) colors.panelDisabled
+                        else colors.panelText
+                    iconStroke.strokeWidth = dpf(2.5f)
+                    iconStroke.strokeCap = Paint.Cap.ROUND
+                    when (actionKey) {
+                        "Home" -> {
+                            canvas.drawLine(cx - arm, cy - arm, cx - arm, cy + arm, iconStroke)
+                            canvas.drawLine(cx + arm, cy - arm, cx - arm * 0.2f, cy, iconStroke)
+                            canvas.drawLine(cx - arm * 0.2f, cy, cx + arm, cy + arm, iconStroke)
+                        }
+                        "End" -> {
+                            canvas.drawLine(cx + arm, cy - arm, cx + arm, cy + arm, iconStroke)
+                            canvas.drawLine(cx - arm, cy - arm, cx + arm * 0.2f, cy, iconStroke)
+                            canvas.drawLine(cx + arm * 0.2f, cy, cx - arm, cy + arm, iconStroke)
+                        }
+                        "Delete" -> {
+                            val path = Path()
+                            path.moveTo(cx + arm, cy - arm)
+                            path.lineTo(cx - arm, cy)
+                            path.lineTo(cx + arm, cy + arm)
+                            path.close()
+                            canvas.drawPath(path, iconStroke)
+                            canvas.drawLine(cx - arm * 0.4f, cy - arm * 0.4f,
+                                cx + arm * 0.4f, cy + arm * 0.4f, iconStroke)
+                            canvas.drawLine(cx - arm * 0.4f, cy + arm * 0.4f,
+                                cx + arm * 0.4f, cy - arm * 0.4f, iconStroke)
+                        }
                     }
-                )
+                    iconStroke.strokeCap = Paint.Cap.BUTT
+                    return
+                }
+                val display = cell.label
+                textPaint.textSize = dpf(15f)
                 val m = textPaint.fontMetrics
                 textPaint.textAlign = Paint.Align.CENTER
                 canvas.drawText(display, cell.rect.centerX(),
@@ -3342,7 +3494,10 @@ class DroidImeService : InputMethodService() {
             shape.setBounds(popup.left.toInt(), popup.top.toInt(), popup.right.toInt(), popup.bottom.toInt())
             shape.draw(canvas)
             val clip = clips.firstOrNull { it.id == clipMenuId } ?: return
-            val labels = listOf(if (clip.pinned) "Unpin" else "Pin", "Delete")
+            val labels = listOf(
+                resources.getString(if (clip.pinned) R.string.clip_unpin else R.string.clip_pin),
+                resources.getString(R.string.clip_delete)
+            )
             iconStroke.color = colors.text
             iconStroke.strokeWidth = dpf(1.6f)
             textPaint.color = colors.text
@@ -3420,6 +3575,7 @@ class DroidImeService : InputMethodService() {
                     glideY.clear()
                     if (cell != null && panelOpen()) {
                         keyFeedback(this)
+                        clipDragStartY = event.y
                         if (cell.style == KeyStyle.SECTION) return true
                         // The panel has no glide and no delete repeat; every row is a plain tap.
                         val menuAction = if (clipOpen()) clipMenuAction(cell, event.x, event.y) else null
@@ -3476,6 +3632,16 @@ class DroidImeService : InputMethodService() {
                     }
                     if (panelOpen()) {
                         val cell = cellAt(event.x, event.y)
+                        // Gboard also deletes a clip by dragging its long-press menu downwards.
+                        if (clipMenuId != null && clipDragStartY >= 0f &&
+                            event.y - clipDragStartY > dpf(80f)
+                        ) {
+                            deleteClip(clipMenuId!!)
+                            clipMenuId = null
+                            clipDragStartY = -1f
+                            cancelPendingLongPress()
+                            return true
+                        }
                         if (clipSwipeCell != null) {
                             clipSwipeDx = event.x - clipSwipeStartX
                             if (kotlin.math.abs(clipSwipeDx) >
@@ -3509,7 +3675,11 @@ class DroidImeService : InputMethodService() {
                     // Delete captures the pointer; a left swipe switches from character repeat
                     // to Gboard's whole-word delete.
                     if (pressed?.isDelete == true) {
-                        if (!deleteSwipeHandled && event.x - deleteStartX < -dpf(DELETE_SWIPE_DP)) {
+                        val deleteKeyWidth = cells.firstOrNull { it.isDelete }?.rect?.width()
+                            ?: dpf(DELETE_SWIPE_DP * 2f)
+                        if (!deleteSwipeHandled &&
+                            event.x - deleteStartX < -deleteKeyWidth * 0.5f
+                        ) {
                             deleteSwipeHandled = true
                             stopDeleteRepeat()
                             deleteWord()
@@ -3539,12 +3709,14 @@ class DroidImeService : InputMethodService() {
                             clipSwipeCell = null
                             clipSwipeHandled = false
                             clipSwipeDx = 0f
+                            clipDragStartY = -1f
                             longPressFired = false
                             return true
                         }
                         clipSwipeCell = null
                         clipSwipeHandled = false
                         clipSwipeDx = 0f
+                        clipDragStartY = -1f
                         if (cell != null && cell.style != KeyStyle.SECTION && !longPressFired &&
                             cellAt(event.x, event.y) === cell
                         ) {
@@ -3616,6 +3788,7 @@ class DroidImeService : InputMethodService() {
                     clipSwipeCell = null
                     clipSwipeHandled = false
                     clipSwipeDx = 0f
+                    clipDragStartY = -1f
                     glideX.clear()
                     glideY.clear()
                     cancelPendingLongPress()
@@ -3733,6 +3906,8 @@ class DroidImeService : InputMethodService() {
         private fun cancelPendingLongPress() {
             pendingLongPress?.let { pressHandler.removeCallbacks(it) }
             pendingLongPress = null
+            editorRepeat?.let { settingsHandler.removeCallbacks(it) }
+            editorRepeat = null
         }
 
         // TalkBack sees each drawn key as a virtual button child of this view.

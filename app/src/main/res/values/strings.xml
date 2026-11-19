@@ -28,4 +28,14 @@
     <string name="clip_done">Done</string>
     <string name="clip_delete">Delete</string>
     <string name="editor_title">Text editing</string>
+    <string name="editor_select">Select</string>
+    <string name="editor_select_all">Select all</string>
+    <string name="editor_cut">Cut</string>
+    <string name="editor_copy">Copy</string>
+    <string name="editor_paste">Paste</string>
+    <string name="editor_home">Home</string>
+    <string name="editor_end">End</string>
+    <string name="editor_delete">Delete</string>
+    <string name="clip_pin">Pin</string>
+    <string name="clip_unpin">Unpin</string>
 </resources>
