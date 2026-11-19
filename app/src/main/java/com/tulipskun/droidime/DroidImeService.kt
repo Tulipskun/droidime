@@ -1392,8 +1392,15 @@ class DroidImeService : InputMethodService() {
                 KeyEvent.KEYCODE_MOVE_HOME -> if (selecting) 0 to end else 0 to 0
                 KeyEvent.KEYCODE_MOVE_END -> if (selecting) start to len else len to len
                 else -> if (selecting) {
-                    if (step > 0) start to (end + 1).coerceAtMost(len)
-                    else (start - 1).coerceAtLeast(0) to end
+                    if (start != end) {
+                        // Whole-word/whole-text selection: move the active (right) edge.
+                        if (step > 0) start to (end + 1).coerceAtMost(len)
+                        else start to (end - 1).coerceAtLeast(start)
+                    } else if (step > 0) {
+                        start to (end + 1).coerceAtMost(len)
+                    } else {
+                        (start - 1).coerceAtLeast(0) to end
+                    }
                 } else {
                     val p = (if (step > 0) (end + 1) else (start - 1)).coerceIn(0, len)
                     p to p
@@ -1433,11 +1440,11 @@ class DroidImeService : InputMethodService() {
             "Select" -> {
                 editorSelecting = !editorSelecting
                 if (editorSelecting) {
+                    // Ctrl+A is the most widely supported selection route (including terminals);
+                    // fall back to the word-level and context-action paths for other editors.
+                    sendCtrl(KeyEvent.KEYCODE_A)
                     selectWordUnderCursor()
-                    // Some editor implementations ignore setSelection but honour context actions.
-                    if (connection.getSelectedText(0).isNullOrEmpty()) {
-                        connection.performContextMenuAction(android.R.id.selectAll)
-                    }
+                    connection.performContextMenuAction(android.R.id.selectAll)
                 } else {
                     editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = false)
                 }
@@ -1452,7 +1459,11 @@ class DroidImeService : InputMethodService() {
             "Undo" -> sendCtrl(KeyEvent.KEYCODE_Z)
             "Redo" -> sendCtrl(KeyEvent.KEYCODE_Y)
         }
-        if (editorPanelVisible) renderKeyboard()
+        if (editorPanelVisible) {
+            renderKeyboard()
+            // Selection changes land asynchronously in some editors; refresh the action labels.
+            keyboardView?.post { renderKeyboard() }
+        }
         afterTextChanged()
     }
 
