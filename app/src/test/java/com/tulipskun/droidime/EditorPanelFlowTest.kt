@@ -99,7 +99,9 @@ class EditorPanelFlowTest {
         invoke(service, "editorAction", "Select")
         assertTrue(getField(service, "editorSelecting") as Boolean)
         invoke(service, "editorAction", "←")
-        val leftDown = connection.events.first { it.action == KeyEvent.ACTION_DOWN }
+        val leftDown = connection.events.first {
+            it.action == KeyEvent.ACTION_DOWN && it.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+        }
         assertTrue(leftDown.metaState and KeyEvent.META_SHIFT_ON != 0)
 
         invoke(service, "editorAction", "Select")
