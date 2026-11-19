@@ -374,12 +374,12 @@ class LogicTest {
         connection.commitText("hello", 1)
 
         call(service, "deleteOne", false)
-        assertEquals("o", getField(service, "undoText"))
+        assertEquals("o", (getField(service, "undoStack") as ArrayDeque<String>).last())
         assertEquals("hell", connection.getTextBeforeCursor(20, 0).toString())
 
         call(service, "restoreUndo")
         assertEquals("hello", connection.getTextBeforeCursor(20, 0).toString())
-        assertNullValue(getField(service, "undoText"))
+        assertTrue((getField(service, "undoStack") as ArrayDeque<String>).isEmpty())
     }
 
     @Test fun removedSuggestionsAreSuppressed() {

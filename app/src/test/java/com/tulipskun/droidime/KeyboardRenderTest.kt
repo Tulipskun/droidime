@@ -120,7 +120,7 @@ class KeyboardRenderTest {
             service.setField("clipPanelVisible", s.clip)
             service.setField("editorPanelVisible", s.editor)
             service.setField("clipMenuId", if (s.clipMenu) "2" else null)
-            service.setField("clipSelection", null)
+            service.setField("clipSelection", LinkedHashSet<String>())
             service.setField("clipEdit", s.clipEdit)
 
             renderSizes.forEach { (h, suffix) -> renderAndWrite(s.file, h, suffix) }
