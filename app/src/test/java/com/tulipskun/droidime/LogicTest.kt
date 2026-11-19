@@ -285,9 +285,11 @@ class LogicTest {
         )
         val cases = listOf(
             Case(
-                arrayOf("ภาษา", "ภาษี"), intArrayOf(100, 90),
+                // ภาสา has a real middle key and initially matched the detour better; the
+                // collapsed-path distance correction must put the common word ภาษา first.
+                arrayOf("ภาษา", "ภาสา"), intArrayOf(21080, 9),
                 mapOf('ภ' to floatArrayOf(0f, 0f), 'า' to floatArrayOf(120f, 0f),
-                    'ษ' to floatArrayOf(120f, 0f)),
+                    'ษ' to floatArrayOf(120f, 0f), 'ส' to floatArrayOf(60f, 80f)),
                 "ภาษา"
             ),
             Case(
@@ -304,7 +306,7 @@ class LogicTest {
                 service, "glideCandidates", xs, ys, centers, 40f, true,
                 emptyMap<String, Int>()
             ) as List<*>
-            assertTrue("collapsed glide should find $expected, got $out", out.contains(expected))
+            assertEquals("collapsed glide should rank $expected first, got $out", expected, out.firstOrNull())
         }
     }
 

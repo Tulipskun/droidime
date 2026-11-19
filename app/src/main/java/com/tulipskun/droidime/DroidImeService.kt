@@ -1042,7 +1042,11 @@ class DroidImeService : InputMethodService() {
             }
             val distance = sum / weightSum / keyW
             val limit = if (collapsedPath) 3.5f else 2.9f
-            return if (distance > limit) -1f else distance
+            if (distance > limit) return -1f
+            // A collapsed path has fewer ideal points than letters, so the measured distance is
+            // systematically inflated. Scaling it back lets common words such as ภาษา outrank rare
+            // decoys (ภาสา) when a gesture detours around the missing shift-layer key.
+            return if (collapsedPath) distance * 0.6f else distance
         }
         val scored = ArrayList<Pair<Float, String>>()
         if (dict != null) for (i in dict.glideCandidates(firstKeys, lastKeys)) {
