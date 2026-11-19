@@ -330,7 +330,6 @@ class DroidImeService : InputMethodService() {
     // language, but auto-capitalisation must not do that on the first space of a sentence.
     private var shiftManual = false
     private var undoText: String? = null
-    private var suggestionPage = 0
     private val suppressedWords = HashSet<String>()
     private var shiftLocked = false
     private var lastShiftTap = 0L
@@ -784,6 +783,10 @@ class DroidImeService : InputMethodService() {
         val type = currentInputEditorInfo?.inputType ?: return emptyList()
         if ((type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return emptyList()
         val connection = currentInputConnection ?: return emptyList()
+        val before = connection.getTextBeforeCursor(24, 0)?.toString() ?: return emptyList()
+        // Gboard shows no candidates at all when the focused field has no text — not even
+        // glide alternatives left over from a word that has since been deleted.
+        if (before.none { it.isLetterOrDigit() }) return emptyList()
         glideCommitted?.let { committed ->
             val tail = connection.getTextBeforeCursor(committed.length, 0)?.toString()
             if (tail == committed) return glideAlternatives
@@ -791,7 +794,6 @@ class DroidImeService : InputMethodService() {
         }
         val after = connection.getTextAfterCursor(1, 0)
         if (!after.isNullOrEmpty() && after[0].isLetterOrDigit()) return emptyList()
-        val before = connection.getTextBeforeCursor(24, 0)?.toString() ?: return emptyList()
         val lastWordChar = before.lastOrNull { it.isLetterOrDigit() } ?: return emptyList()
         return if (isThai(lastWordChar)) thaiSuggestions(before) else englishSuggestions(before)
     }
@@ -1786,14 +1788,6 @@ class DroidImeService : InputMethodService() {
         afterTextChanged()
     }
 
-    private fun rotateSuggestions(forward: Boolean) {
-        if (suggestions.size < 2) return
-        suggestions = if (forward) suggestions.drop(1) + suggestions.take(1)
-        else suggestions.takeLast(1) + suggestions.dropLast(1)
-        suggestionPage++
-        keyboardView?.rebuild()
-    }
-
     private fun removeSuggestion(word: String) {
         if (suppressedWords.add(word)) {
             preferences.edit()
@@ -2084,10 +2078,8 @@ class DroidImeService : InputMethodService() {
                         }
                     }
                 }
-                // Gboard-style paging: ‹ / › cycle through the available candidates.
-                listOf(Cell("‹", KeyStyle.SUGGESTION, null, action = { rotateSuggestions(false) })) +
-                    slots +
-                    listOf(Cell("›", KeyStyle.SUGGESTION, null, action = { rotateSuggestions(true) }))
+                // Gboard has exactly three candidate slots; no paging arrows.
+                slots
             }
             // Gboard's rightmost strip button expands the toolbar; it opens text editing here.
             val expand = tool(ToolIcon.EXPAND, "Text editing")
