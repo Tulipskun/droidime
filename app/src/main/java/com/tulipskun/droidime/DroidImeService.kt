@@ -3218,7 +3218,7 @@ class DroidImeService : InputMethodService() {
             if (editorPanelVisible && cell.label in setOf("←", "→", "↑", "↓")) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
-                val arm = dpf(9f)
+                val arm = dpf(6.5f)
                 iconStroke.color = colors.panelText
                 iconStroke.strokeWidth = dpf(1.6f)
                 iconStroke.strokeCap = Paint.Cap.ROUND
@@ -3260,7 +3260,7 @@ class DroidImeService : InputMethodService() {
                     iconStroke.strokeCap = Paint.Cap.BUTT
                 } else {
                     iconStroke.color = colors.hint
-                    iconStroke.strokeWidth = dpf(1.6f)
+                    iconStroke.strokeWidth = dpf(1.9f)
                     canvas.drawCircle(px, py, r, iconStroke)
                 }
             } else if (clip != null && clip.pinned) {
@@ -3300,10 +3300,10 @@ class DroidImeService : InputMethodService() {
                     // Gboard draws these as vector glyphs rather than text.
                     val cx = cell.rect.centerX()
                     val cy = cell.rect.centerY()
-                    val arm = dpf(9f)
+                    val arm = dpf(6.5f)
                     iconStroke.color = if (actionKey == "Delete" && disabled) colors.panelDisabled
                         else colors.panelText
-                    iconStroke.strokeWidth = dpf(1.6f)
+                    iconStroke.strokeWidth = dpf(1.9f)
                     iconStroke.strokeCap = Paint.Cap.ROUND
                     when (actionKey) {
                         "Home" -> {
@@ -3409,6 +3409,33 @@ class DroidImeService : InputMethodService() {
             iconStroke.color = color
             iconStroke.strokeWidth = (s * 0.16f).coerceAtLeast(1.6f * resources.displayMetrics.density)
             iconFill.color = color
+            // Icon silhouettes vectorised from the sampled Gboard pixels (no copied asset).
+            val vector = when (cell.icon) {
+                ToolIcon.UNDO -> VectorIcons.UN
+                ToolIcon.GRID -> VectorIcons.GRID
+                ToolIcon.TRANSLATE -> VectorIcons.TRANSLATE
+                ToolIcon.CLIPBOARD -> VectorIcons.CLIP
+                ToolIcon.SETTINGS -> VectorIcons.GEAR
+                ToolIcon.EXPAND -> VectorIcons.EXPAND
+                else -> null
+            }
+            if (vector != null) {
+                // Sampled centres differ by a few pixels from our strip pitch; align them.
+                val dx = when (cell.icon) {
+                    ToolIcon.GRID -> dpf(1.5f)
+                    ToolIcon.UNDO -> dpf(1.2f)
+                    ToolIcon.TRANSLATE -> -dpf(0.8f)
+                    ToolIcon.CLIPBOARD -> -dpf(0.4f)
+                    ToolIcon.SETTINGS -> -dpf(1.2f)
+                    ToolIcon.EXPAND -> -dpf(2f)
+                    else -> 0f
+                }
+                val dy = if (cell.icon == ToolIcon.TRANSLATE ||
+                    cell.icon == ToolIcon.SETTINGS || cell.icon == ToolIcon.EXPAND
+                ) -dpf(1.5f) else -dpf(2f)
+                VectorIcons.draw(canvas, vector, cx + dx, cy + dy, s / dpf(12f), iconFill)
+                return
+            }
             when (cell.icon) {
                 ToolIcon.GIF -> { }
                 ToolIcon.GRID -> {
