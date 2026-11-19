@@ -256,6 +256,27 @@ class LogicTest {
         assertFalse(matches.contains(2))
     }
 
+    @Test fun glideFindsThaiWordWithShiftLayerCollapsedPath() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val dictClass = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = dictClass.declaredConstructors.first(); ctor.isAccessible = true
+        setField(service, "dictTh", ctor.newInstance(arrayOf("ภาษา"), intArrayOf(100)))
+        // ษ is the shift layer of า, so "ภาษา" (ภ-า-ษ-า) collapses to two key centres. The gesture
+        // detours well away from that straight line, which the old length-ratio filter rejected.
+        val centers = mapOf(
+            'ภ' to floatArrayOf(0f, 0f),
+            'า' to floatArrayOf(120f, 0f),
+            'ษ' to floatArrayOf(120f, 0f)
+        )
+        val xs = floatArrayOf(0f, 20f, 40f, 60f, 80f, 100f, 120f)
+        val ys = floatArrayOf(0f, 80f, 120f, 120f, 120f, 80f, 0f)
+        val out = call(
+            service, "glideCandidates", xs, ys, centers, 40f, true,
+            emptyMap<String, Int>()
+        ) as List<*>
+        assertTrue("collapsed Thai glide should still find ภาษา, got $out", out.contains("ภาษา"))
+    }
+
     @Test fun glidePathHistoryIsSavedAsOneCompleteGesture() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val points = listOf(10f to 20f, 30f to 40f, 50f to 60f)

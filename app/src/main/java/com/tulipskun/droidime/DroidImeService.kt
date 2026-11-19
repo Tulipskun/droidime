@@ -774,7 +774,7 @@ class DroidImeService : InputMethodService() {
     private fun isThai(c: Char) = c in '\u0E01'..'\u0E5B'
 
     // ---- Suggestions ---------------------------------------------------------------------------
-    // Suggestions follow the characters before the cursor, whichever keyboard language is shown.
+    // Suggestions follow the active keyboard language, like Gboard.
     // Pressing a key while the panel is open acts on the clip, so the strip is not involved.
     private fun computeSuggestions(): List<Suggestion> {
         if (!preferences.getBoolean("suggestions", true)) return emptyList()
@@ -794,8 +794,7 @@ class DroidImeService : InputMethodService() {
         }
         val after = connection.getTextAfterCursor(1, 0)
         if (!after.isNullOrEmpty() && after[0].isLetterOrDigit()) return emptyList()
-        val lastWordChar = before.lastOrNull { it.isLetterOrDigit() } ?: return emptyList()
-        return if (isThai(lastWordChar)) thaiSuggestions(before) else englishSuggestions(before)
+        return if (language == Language.THAI) thaiSuggestions(before) else englishSuggestions(before)
     }
 
     private fun englishSuggestions(before: String): List<Suggestion> {
@@ -1020,15 +1019,22 @@ class DroidImeService : InputMethodService() {
             if (m < 2) return -1f
             val px = wx.copyOf(m)
             val py = wy.copyOf(m)
+            // Thai shift-layer letters share their base key (e.g. ษ lives on า), so a word such as
+            // "ภาษา" collapses to a two-point path. A finger detour must not reject that word on
+            // the length-ratio check alone.
+            val collapsedPath = m < seq.length
             val idealLen = pathLength(px, py)
-            if (idealLen < gestureLen * 0.4f || idealLen > gestureLen * 2.5f) return -1f
+            if (!collapsedPath &&
+                (idealLen < gestureLen * 0.4f || idealLen > gestureLen * 2.5f)
+            ) return -1f
             val ideal = resample(px, py, n)
             var sum = 0f
             for (k in 0 until n) {
                 sum += pointWeights[k] * hypotf(ideal[2 * k] - gesture[2 * k], ideal[2 * k + 1] - gesture[2 * k + 1])
             }
             val distance = sum / weightSum / keyW
-            return if (distance > 2.9f) -1f else distance
+            val limit = if (collapsedPath) 3.5f else 2.9f
+            return if (distance > limit) -1f else distance
         }
         val scored = ArrayList<Pair<Float, String>>()
         if (dict != null) for (i in dict.glideCandidates(firstKeys, lastKeys)) {
@@ -1284,8 +1290,32 @@ class DroidImeService : InputMethodService() {
         renderKeyboard()
     }
 
-    private fun selectAllText() {
-        currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
+    // Gboard's "Select" key selects the word under the caret first; arrows then extend that
+    // selection. Pressing it again leaves selection mode and collapses the selection.
+    private fun selectWordUnderCursor() {
+        val connection = currentInputConnection ?: return
+        val before = connection.getTextBeforeCursor(128, 0)?.toString().orEmpty()
+        val after = connection.getTextAfterCursor(128, 0)?.toString().orEmpty()
+        // Some editors do not answer getExtractedText; the text before the cursor is still enough
+        // to locate the word when the field is short, which is the common case here.
+        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
+        val cursor = if (extracted != null && extracted.selectionStart >= 0)
+            extracted.startOffset + extracted.selectionStart else before.length
+        var wordStart = before.length
+        while (wordStart > 0 && before[wordStart - 1].isLetterOrDigit()) wordStart--
+        var wordEnd = 0
+        while (wordEnd < after.length && after[wordEnd].isLetterOrDigit()) wordEnd++
+        if (wordStart == before.length && wordEnd == 0) return
+        connection.setSelection(cursor - (before.length - wordStart), cursor + wordEnd)
+    }
+
+    private fun collapseSelection() {
+        val connection = currentInputConnection ?: return
+        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
+        if (extracted != null && extracted.selectionStart >= 0) {
+            val offset = extracted.startOffset + extracted.selectionEnd
+            connection.setSelection(offset, offset)
+        }
     }
 
     private fun openEditorPanel() {
@@ -1333,7 +1363,10 @@ class DroidImeService : InputMethodService() {
             "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = editorSelecting)
             "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP, selecting = editorSelecting)
             "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN, selecting = editorSelecting)
-            "Select" -> editorSelecting = !editorSelecting
+            "Select" -> {
+                editorSelecting = !editorSelecting
+                if (editorSelecting) selectWordUnderCursor() else collapseSelection()
+            }
             "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME, selecting = editorSelecting)
             "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END, selecting = editorSelecting)
             "Select all" -> connection.performContextMenuAction(android.R.id.selectAll)
@@ -3101,7 +3134,8 @@ class DroidImeService : InputMethodService() {
             textPaint.typeface = Typeface.DEFAULT
             if (editorPanelVisible) {
                 val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
-                if (!hasSelection && cell.label in setOf("Select", "Select all", "Copy")) {
+                // "Select" starts selection mode, so it must never look disabled.
+                if (!hasSelection && cell.label in setOf("Select all", "Copy")) {
                     textPaint.color = colors.panelDisabled
                 }
                 val display = when (cell.label) {
