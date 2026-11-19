@@ -1361,22 +1361,47 @@ class DroidImeService : InputMethodService() {
         renderKeyboard()
     }
 
+    private fun selectWordUnderCursor() {
+        val connection = currentInputConnection ?: return
+        val before = connection.getTextBeforeCursor(128, 0)?.toString().orEmpty()
+        val after = connection.getTextAfterCursor(128, 0)?.toString().orEmpty()
+        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
+        val cursor = if (extracted != null && extracted.selectionStart >= 0)
+            extracted.startOffset + extracted.selectionStart else before.length
+        var wordStart = before.length
+        while (wordStart > 0 && before[wordStart - 1].isLetterOrDigit()) wordStart--
+        var wordEnd = 0
+        while (wordEnd < after.length && after[wordEnd].isLetterOrDigit()) wordEnd++
+        if (wordStart == before.length && wordEnd == 0) return
+        connection.setSelection(cursor - (before.length - wordStart), cursor + wordEnd)
+    }
+
     private fun editorKey(keyCode: Int, selecting: Boolean = false) {
         val connection = currentInputConnection ?: return
-        // Without select mode a directional key collapses the selection. Do it here instead of
-        // relying on the editor to interpret the key event: some connections leave the selection
-        // intact, which kept the editing panel showing Cut long after the caret had moved.
-        if (!selecting) {
-            val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
-            if (extracted != null && extracted.selectionStart >= 0 &&
-                extracted.selectionStart != extracted.selectionEnd
-            ) {
-                val toEnd = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
-                    keyCode == KeyEvent.KEYCODE_MOVE_END
-                val offset = extracted.startOffset +
-                    (if (toEnd) extracted.selectionEnd else extracted.selectionStart)
-                connection.setSelection(offset, offset)
+        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
+        if (extracted != null && extracted.selectionStart >= 0) {
+            // Set the selection directly: terminals ignore SHIFT+arrow key events, while normal
+            // editors honour setSelection consistently.
+            val len = extracted.text?.length ?: 0
+            val start = extracted.startOffset + extracted.selectionStart
+            val end = extracted.startOffset + extracted.selectionEnd
+            val toEnd = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == KeyEvent.KEYCODE_MOVE_END
+            val step = if (toEnd) 1 else -1
+            val (a, b) = when (keyCode) {
+                KeyEvent.KEYCODE_MOVE_HOME -> if (selecting) 0 to end else 0 to 0
+                KeyEvent.KEYCODE_MOVE_END -> if (selecting) start to len else len to len
+                else -> if (selecting) {
+                    if (step > 0) start to (end + 1).coerceAtMost(len)
+                    else (start - 1).coerceAtLeast(0) to end
+                } else {
+                    val p = (if (step > 0) (end + 1) else (start - 1)).coerceIn(0, len)
+                    p to p
+                }
             }
+            connection.setSelection(a.coerceIn(0, len), b.coerceIn(0, len))
+            afterTextChanged()
+            return
         }
         val meta = if (selecting) KeyEvent.META_SHIFT_ON else 0
         val now = SystemClock.uptimeMillis()
@@ -1405,9 +1430,18 @@ class DroidImeService : InputMethodService() {
             "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = editorSelecting)
             "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP, selecting = editorSelecting)
             "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN, selecting = editorSelecting)
-            // Gboard lights up Select to enter selection mode; the arrows then extend the
-            // selection. It does not select a word by itself.
-            "Select" -> editorSelecting = !editorSelecting
+            "Select" -> {
+                editorSelecting = !editorSelecting
+                if (editorSelecting) {
+                    selectWordUnderCursor()
+                    // Some editor implementations ignore setSelection but honour context actions.
+                    if (connection.getSelectedText(0).isNullOrEmpty()) {
+                        connection.performContextMenuAction(android.R.id.selectAll)
+                    }
+                } else {
+                    editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = false)
+                }
+            }
             "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME, selecting = editorSelecting)
             "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END, selecting = editorSelecting)
             "Select all" -> connection.performContextMenuAction(android.R.id.selectAll)
@@ -1692,17 +1726,10 @@ class DroidImeService : InputMethodService() {
         // Gboard keeps the "Undo delete" chip available after the user resumes typing; only a new
         // destructive action invalidates it.
         if (connection != null) {
-            if (language == Language.THAI && isThaiText(value)) {
-                if (thaiComposingText.isNotEmpty()) {
-                    val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
-                    if (thaiWordIsComplete(before)) finishThaiComposition()
-                }
-                thaiComposingText += value
-                connection.setComposingText(thaiComposingText, 1)
-            } else {
-                finishThaiComposition()
-                connection.commitText(value, 1)
-            }
+            // Composing regions are invisible in terminal editors (Termux), so commit directly.
+            // Thai word segmentation still runs on the committed text for suggestions/deletion.
+            finishThaiComposition()
+            connection.commitText(value, 1)
         }
         afterTextChanged()
     }
@@ -1864,9 +1891,26 @@ class DroidImeService : InputMethodService() {
         val start = TextDeletion.previousWordStart(before)
         if (start < before.length) {
             undoStack.addLast(before.substring(start))
-            connection.deleteSurroundingText(before.length - start, 0)
+            deleteBefore(before.length - start)
             afterTextChanged()
         }
+    }
+
+    private fun deleteBefore(length: Int): Boolean {
+        if (length <= 0) return false
+        val connection = currentInputConnection ?: return false
+        if (connection.deleteSurroundingText(length, 0)) return true
+        // Terminals such as Termux do not implement deleteSurroundingText; fall back to key events.
+        repeat(length) {
+            val now = SystemClock.uptimeMillis()
+            connection.sendKeyEvent(
+                KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0, 0)
+            )
+            connection.sendKeyEvent(
+                KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0, 0)
+            )
+        }
+        return true
     }
 
     private fun deleteOne(updateShift: Boolean = true) {
@@ -1893,7 +1937,7 @@ class DroidImeService : InputMethodService() {
         val tail = glideCommitted
         if (tail != null && connection.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
             undoStack.addLast(tail)
-            connection.deleteSurroundingText(tail.length, 0)
+            deleteBefore(tail.length)
             glideCommitted = null
             glideAlternatives = emptyList()
             if (updateShift) afterTextChanged()
@@ -1910,7 +1954,7 @@ class DroidImeService : InputMethodService() {
             val start = TextDeletion.previousClusterStart(before)
             if (start < before.length) {
                 undoStack.addLast(before.substring(start))
-                connection.deleteSurroundingText(before.length - start, 0)
+                deleteBefore(before.length - start)
             }
         }
         if (updateShift) afterTextChanged()
@@ -2197,12 +2241,17 @@ class DroidImeService : InputMethodService() {
         private fun stripCells(): List<Cell> {
             fun tool(icon: ToolIcon, name: String): Cell =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
-            val middle: List<Cell> = if (suggestions.isEmpty() && undoStack.isEmpty() && deletedClip == null) {
+            // Gboard keeps the undo affordance in the toolbar only; the candidate strip never
+            // sacrifices a word slot for an Undo chip.
+            val middle: List<Cell> = if (suggestions.isEmpty()) {
                 // Gboard's toolbar on this device: grid, undo, translate, clipboard, settings, expand.
                 listOf(
                     tool(ToolIcon.UNDO, "Undo").withAction {
-                        if (undoStack.isNotEmpty()) restoreUndo()
-                        else sendCtrl(KeyEvent.KEYCODE_Z)
+                        when {
+                            deletedClip != null -> restoreClip()
+                            undoStack.isNotEmpty() -> restoreUndo()
+                            else -> sendCtrl(KeyEvent.KEYCODE_Z)
+                        }
                     },
                     tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
                     tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() },
@@ -2210,19 +2259,13 @@ class DroidImeService : InputMethodService() {
                 )
             } else {
                 val slots = List(3) { i ->
-                    if (i == 0 && (undoStack.isNotEmpty() || deletedClip != null)) {
-                        Cell("Undo", KeyStyle.SUGGESTION, null, action = {
-                            if (deletedClip != null) restoreClip() else restoreUndo()
-                        })
+                    val s = suggestions.getOrNull(i)
+                    if (s != null) {
+                        Cell(s.text, KeyStyle.SUGGESTION, null,
+                            action = { applySuggestion(s) },
+                            longAction = { removeSuggestion(s.text) })
                     } else {
-                        val s = suggestions.getOrNull(i)
-                        if (s != null) {
-                            Cell(s.text, KeyStyle.SUGGESTION, null,
-                                action = { applySuggestion(s) },
-                                longAction = { removeSuggestion(s.text) })
-                        } else {
-                            Cell("", KeyStyle.SUGGESTION, null, action = {})
-                        }
+                        Cell("", KeyStyle.SUGGESTION, null, action = {})
                     }
                 }
                 // Gboard has exactly three candidate slots; no paging arrows.
