@@ -126,7 +126,8 @@ class LogicTest {
         for (ch in "สวัสดีครับ") call(service, "typeText", ch.toString())
 
         assertEquals("สวัสดีครับ", connection.getTextBeforeCursor(20, 0).toString())
-        assertEquals("ครับ", getField(service, "thaiComposingText"))
+        // Terminals do not render composing regions, so Thai is committed directly.
+        assertEquals("", getField(service, "thaiComposingText"))
     }
 
     @Test fun thaiNextWordIsLearnedFromTypingWithSpace() {
