@@ -23,6 +23,10 @@ internal object NextWordModel {
 
     fun isWordChar(c: Char): Boolean = isEnglishWordChar(c) || isThaiWordChar(c) || c.isDigit()
 
+    fun isEnglishWord(word: String): Boolean = word.isNotEmpty() && word.all { isEnglishWordChar(it) }
+
+    fun isThaiWord(word: String): Boolean = word.isNotEmpty() && word.all { isThaiWordChar(it) }
+
     fun context(before: String): WordContext {
         var wordEnd = before.length
         while (wordEnd > 0 && !isWordChar(before[wordEnd - 1])) wordEnd--
@@ -50,10 +54,12 @@ internal object NextWordModel {
     fun learnedNextWords(
         previous: String?,
         transitions: Map<String, LinkedHashMap<String, Int>>,
-        limit: Int = 3
+        limit: Int = 3,
+        script: (String) -> Boolean = { true }
     ): List<String> {
         val key = normalize(previous ?: return emptyList()) ?: return emptyList()
         return transitions[key].orEmpty().entries
+            .filter { script(it.key) }
             .sortedByDescending { it.value }
             .take(limit)
             .map { it.key }
@@ -108,7 +114,8 @@ internal object NextWordModel {
         dictionary: NextWordDictionary?,
         transitions: Map<String, LinkedHashMap<String, Int>>,
         userWords: Map<String, Int>,
-        editPenalty: Int
+        editPenalty: Int,
+        script: (String) -> Boolean = { true }
     ): List<String> {
         if (typed.length > 20) return emptyList()
         val lower = typed.lowercase()
@@ -140,6 +147,7 @@ internal object NextWordModel {
             if (!learned.isNullOrEmpty()) {
                 val base = (dictionary?.maxFrequency ?: 1) + 1
                 for ((word, count) in learned) {
+                    if (!script(word)) continue
                     if (lower.isNotEmpty() && !word.startsWith(lower)) continue
                     val index = dictionary?.indexOf(word) ?: -1
                     val freq = if (dictionary != null && index >= 0) dictionary.freqs[index] else 0
@@ -158,12 +166,12 @@ internal object NextWordModel {
                 }
             }
             for ((word, count) in userWords) {
-                if (word in exclude) continue
+                if (!script(word) || word in exclude) continue
                 offer(word, count * 3)
             }
         } else {
             for ((word, count) in userWords) {
-                if (word == lower) continue
+                if (!script(word) || word == lower) continue
                 if (word.length > lower.length && word.startsWith(lower)) {
                     offer(word, count * 3 - (word.length - lower.length))
                 } else if (lower.length >= 3 && oneEdit(word, lower)) {

@@ -236,7 +236,8 @@ class DroidImeService : InputMethodService() {
         val panelKey: Int,
         val panelFunction: Int,
         val panelText: Int,
-        val panelDisabled: Int
+        val panelDisabled: Int,
+        val selectionActiveText: Int
     )
 
     // Exact values sampled from Gboard's shipped keyboard (light and dark screenshots).
@@ -254,7 +255,8 @@ class DroidImeService : InputMethodService() {
         panelKey = Color.WHITE,
         panelFunction = Color.rgb(207, 216, 220),
         panelText = Color.rgb(32, 33, 36),
-        panelDisabled = Color.rgb(95, 99, 104)
+        panelDisabled = Color.rgb(95, 99, 104),
+        selectionActiveText = Color.WHITE
     )
     private val darkPalette = Palette(
         // Sampled from Gboard's dark theme on the real device: toolbar/key surface #1e1f20,
@@ -272,7 +274,8 @@ class DroidImeService : InputMethodService() {
         panelKey = Color.rgb(57, 57, 57),
         panelFunction = Color.rgb(71, 71, 71),
         panelText = Color.rgb(226, 226, 226),
-        panelDisabled = Color.rgb(108, 108, 108)
+        panelDisabled = Color.rgb(108, 108, 108),
+        selectionActiveText = Color.rgb(194, 231, 255)
     )
 
     private var suggestions: List<Suggestion> = emptyList()
@@ -807,7 +810,8 @@ class DroidImeService : InputMethodService() {
             dictEn,
             wordTransitions,
             userWords,
-            editPenalty()
+            editPenalty(),
+            script = { NextWordModel.isEnglishWord(it) }
         )
         val lowerTyped = typed.lowercase()
         val typedKnown = (dictEn?.indexOf(lowerTyped) ?: -1) >= 0 || userWords.containsKey(lowerTyped)
@@ -837,7 +841,10 @@ class DroidImeService : InputMethodService() {
     private fun thaiSuggestions(before: String): List<Suggestion> {
         val dict = dictTh
         val context = NextWordModel.context(before)
-        val learned = NextWordModel.learnedNextWords(context.previous, wordTransitions, 3).toSet()
+        val learned = NextWordModel.learnedNextWords(
+            context.previous, wordTransitions, 3,
+            script = { NextWordModel.isThaiWord(it) }
+        ).toSet()
         var start = before.length
         while (start > 0 && isThai(before[start - 1]) && before.length - start < 24) start--
         val run = before.substring(start)
@@ -875,6 +882,7 @@ class DroidImeService : InputMethodService() {
             // Learned vocabulary completes alongside the shipped words.
             if (completions.size < 3) {
                 for ((word, count) in userWords) {
+                    if (!NextWordModel.isThaiWord(word)) continue
                     if (word.length > suffix.length && word.startsWith(suffix) &&
                         completions.none { s -> s.text == word }) {
                         completions.add(Suggestion(word, k, "", count * 4 + k * 1_000_000))
@@ -894,7 +902,7 @@ class DroidImeService : InputMethodService() {
                 fixes.add(Suggestion(dict.words[idx], run.length, "", dict.freqs[idx]))
             }
             for ((word, _) in userWords) {
-                if (word == run) continue
+                if (!NextWordModel.isThaiWord(word) || word == run) continue
                 val w = word.filterNot { it in THAI_MARKS }
                 if (w == stripped || NextWordModel.oneEdit(w, stripped)) {
                     if (fixes.none { s -> s.text == word }) fixes.add(Suggestion(word, run.length, ""))
@@ -1290,34 +1298,6 @@ class DroidImeService : InputMethodService() {
         renderKeyboard()
     }
 
-    // Gboard's "Select" key selects the word under the caret first; arrows then extend that
-    // selection. Pressing it again leaves selection mode and collapses the selection.
-    private fun selectWordUnderCursor() {
-        val connection = currentInputConnection ?: return
-        val before = connection.getTextBeforeCursor(128, 0)?.toString().orEmpty()
-        val after = connection.getTextAfterCursor(128, 0)?.toString().orEmpty()
-        // Some editors do not answer getExtractedText; the text before the cursor is still enough
-        // to locate the word when the field is short, which is the common case here.
-        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
-        val cursor = if (extracted != null && extracted.selectionStart >= 0)
-            extracted.startOffset + extracted.selectionStart else before.length
-        var wordStart = before.length
-        while (wordStart > 0 && before[wordStart - 1].isLetterOrDigit()) wordStart--
-        var wordEnd = 0
-        while (wordEnd < after.length && after[wordEnd].isLetterOrDigit()) wordEnd++
-        if (wordStart == before.length && wordEnd == 0) return
-        connection.setSelection(cursor - (before.length - wordStart), cursor + wordEnd)
-    }
-
-    private fun collapseSelection() {
-        val connection = currentInputConnection ?: return
-        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
-        if (extracted != null && extracted.selectionStart >= 0) {
-            val offset = extracted.startOffset + extracted.selectionEnd
-            connection.setSelection(offset, offset)
-        }
-    }
-
     private fun openEditorPanel() {
         clipPanelVisible = false
         emojiPanelVisible = false
@@ -1363,10 +1343,9 @@ class DroidImeService : InputMethodService() {
             "→" -> editorKey(KeyEvent.KEYCODE_DPAD_RIGHT, selecting = editorSelecting)
             "↑" -> editorKey(KeyEvent.KEYCODE_DPAD_UP, selecting = editorSelecting)
             "↓" -> editorKey(KeyEvent.KEYCODE_DPAD_DOWN, selecting = editorSelecting)
-            "Select" -> {
-                editorSelecting = !editorSelecting
-                if (editorSelecting) selectWordUnderCursor() else collapseSelection()
-            }
+            // Gboard lights up Select to enter selection mode; the arrows then extend the
+            // selection. It does not select a word by itself.
+            "Select" -> editorSelecting = !editorSelecting
             "Home" -> editorKey(KeyEvent.KEYCODE_MOVE_HOME, selecting = editorSelecting)
             "End" -> editorKey(KeyEvent.KEYCODE_MOVE_END, selecting = editorSelecting)
             "Select all" -> connection.performContextMenuAction(android.R.id.selectAll)
@@ -3037,6 +3016,7 @@ class DroidImeService : InputMethodService() {
             val selected = cell.clipId != null && clipSelection == cell.clipId
             if (!emptyClip) {
                 shape.setColor(when {
+                    editorPanelVisible && cell.label == "Select" && editorSelecting -> colors.enter
                     cell === pressed -> colors.active
                     cell.style == KeyStyle.SPECIAL -> colors.panelFunction
                     else -> colors.panelKey
@@ -3130,14 +3110,23 @@ class DroidImeService : InputMethodService() {
                 canvas.drawCircle(px, py - dpf(3f), dpf(3.2f), iconStroke)
                 canvas.drawLine(px, py, px, py + dpf(6f), iconStroke)
             }
-            textPaint.color = if (cell.style == KeyStyle.SPECIAL) colors.specialText else ink
+            val selectMode = editorPanelVisible && cell.label == "Select" && editorSelecting
+            textPaint.color = when {
+                selectMode -> colors.selectionActiveText
+                cell.style == KeyStyle.SPECIAL -> colors.specialText
+                else -> ink
+            }
             textPaint.typeface = Typeface.DEFAULT
             if (editorPanelVisible) {
                 val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
-                // "Select" starts selection mode, so it must never look disabled.
-                if (!hasSelection && cell.label in setOf("Select all", "Copy")) {
-                    textPaint.color = colors.panelDisabled
+                // Gboard keeps Select/Select all bright; it greys Cut/Copy without a selection and
+                // Paste when the clipboard is empty.
+                val disabled = when (cell.label) {
+                    "Paste" -> clips.isEmpty()
+                    "Cut", "Copy" -> !hasSelection
+                    else -> false
                 }
+                if (disabled && !selectMode) textPaint.color = colors.panelDisabled
                 val display = when (cell.label) {
                     "Home" -> "|‹"
                     "End" -> "›|"

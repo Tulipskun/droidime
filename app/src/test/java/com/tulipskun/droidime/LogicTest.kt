@@ -243,6 +243,23 @@ class LogicTest {
         assertFalse("previous word should not be suggested again", out.any { getField(it!!, "text") == "hello" })
     }
 
+    @Test fun learnedPredictionsRespectActiveLanguageScript() {
+        val transitions = linkedMapOf(
+            "go" to LinkedHashMap(mapOf("hello" to 9, "สวัสดี" to 5))
+        )
+        val english = NextWordModel.rankedWords(
+            "", "go", null, transitions, emptyMap(), 1,
+            script = { NextWordModel.isEnglishWord(it) }
+        )
+        assertTrue(english.contains("hello"))
+        assertFalse(english.contains("สวัสดี"))
+        val thai = NextWordModel.learnedNextWords(
+            "go", transitions, 3, script = { NextWordModel.isThaiWord(it) }
+        )
+        assertTrue(thai.contains("สวัสดี"))
+        assertFalse(thai.contains("hello"))
+    }
+
     @Test fun glideDictionaryUsesStartAndEndCharacterIndex() {
         val cls = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
         val ctor = cls.declaredConstructors.first(); ctor.isAccessible = true
@@ -256,25 +273,39 @@ class LogicTest {
         assertFalse(matches.contains(2))
     }
 
-    @Test fun glideFindsThaiWordWithShiftLayerCollapsedPath() {
+    @Test fun glideFindsEveryWordWithCollapsedKeyPath() {
         val service = Robolectric.buildService(DroidImeService::class.java).create().get()
         val dictClass = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
         val ctor = dictClass.declaredConstructors.first(); ctor.isAccessible = true
-        setField(service, "dictTh", ctor.newInstance(arrayOf("ภาษา"), intArrayOf(100)))
-        // ษ is the shift layer of า, so "ภาษา" (ภ-า-ษ-า) collapses to two key centres. The gesture
-        // detours well away from that straight line, which the old length-ratio filter rejected.
-        val centers = mapOf(
-            'ภ' to floatArrayOf(0f, 0f),
-            'า' to floatArrayOf(120f, 0f),
-            'ษ' to floatArrayOf(120f, 0f)
+        // A collapsed path is any word whose letters share a key centre: ษ is the shift layer of
+        // า in "ภาษา", and repeated letters collapse in "กขกข". The fix must cover both, not one word.
+        data class Case(
+            val words: Array<String>, val freqs: IntArray,
+            val centers: Map<Char, FloatArray>, val expected: String
+        )
+        val cases = listOf(
+            Case(
+                arrayOf("ภาษา", "ภาษี"), intArrayOf(100, 90),
+                mapOf('ภ' to floatArrayOf(0f, 0f), 'า' to floatArrayOf(120f, 0f),
+                    'ษ' to floatArrayOf(120f, 0f)),
+                "ภาษา"
+            ),
+            Case(
+                arrayOf("กขกข"), intArrayOf(100),
+                mapOf('ก' to floatArrayOf(0f, 0f), 'ข' to floatArrayOf(120f, 0f)),
+                "กขกข"
+            )
         )
         val xs = floatArrayOf(0f, 20f, 40f, 60f, 80f, 100f, 120f)
         val ys = floatArrayOf(0f, 80f, 120f, 120f, 120f, 80f, 0f)
-        val out = call(
-            service, "glideCandidates", xs, ys, centers, 40f, true,
-            emptyMap<String, Int>()
-        ) as List<*>
-        assertTrue("collapsed Thai glide should still find ภาษา, got $out", out.contains("ภาษา"))
+        for ((words, freqs, centers, expected) in cases) {
+            setField(service, "dictTh", ctor.newInstance(words, freqs))
+            val out = call(
+                service, "glideCandidates", xs, ys, centers, 40f, true,
+                emptyMap<String, Int>()
+            ) as List<*>
+            assertTrue("collapsed glide should find $expected, got $out", out.contains(expected))
+        }
     }
 
     @Test fun glidePathHistoryIsSavedAsOneCompleteGesture() {
