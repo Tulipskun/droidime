@@ -243,6 +243,28 @@ class LogicTest {
         assertFalse("previous word should not be suggested again", out.any { getField(it!!, "text") == "hello" })
     }
 
+    @Test fun thaiSuggestionsOfferDroppedVowelCorrection() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val dictClass = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = dictClass.declaredConstructors.first(); ctor.isAccessible = true
+        val words = arrayOf("หรอ", "หรอก", "หรือ").sorted().toTypedArray()
+        setField(service, "dictTh", ctor.newInstance(words, intArrayOf(254, 13078, 184518)))
+        val out = call(service, "thaiSuggestions", "หรอ") as List<*>
+        val texts = out.map { getField(it!!, "text") }
+        assertTrue("dropped vowel should offer หรือ, got $texts", texts.contains("หรือ"))
+    }
+
+    @Test fun thaiSuggestionsDoNotOfferNonWordLiteralFirst() {
+        val service = Robolectric.buildService(DroidImeService::class.java).create().get()
+        val dictClass = Class.forName("com.tulipskun.droidime.DroidImeService\$Dictionary")
+        val ctor = dictClass.declaredConstructors.first(); ctor.isAccessible = true
+        val words = arrayOf("ภาษา", "ภาพ", "ภา").sorted().toTypedArray()
+        setField(service, "dictTh", ctor.newInstance(words, intArrayOf(100, 22607, 21080)))
+        val out = call(service, "thaiSuggestions", "ภ") as List<*>
+        assertTrue("a non-word literal must not occupy the first slot",
+            getField(out.first()!!, "text") != "ภ")
+    }
+
     @Test fun learnedPredictionsRespectActiveLanguageScript() {
         val transitions = linkedMapOf(
             "go" to LinkedHashMap(mapOf("hello" to 9, "สวัสดี" to 5))

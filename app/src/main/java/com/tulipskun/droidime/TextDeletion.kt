@@ -62,10 +62,13 @@ internal object TextDeletion {
     // Gboard's swipe-left from Delete removes one word, including a trailing separator.
     // Thai has no spaces, so whitespace splitting would delete the whole sentence; use ICU's word
     // BreakIterator there (the same API Gboard uses) and keep the fast whitespace rule for Latin.
-    fun previousWordStart(text: String, thai: Boolean = false): Int {
+    fun previousWordStart(text: String): Int {
         var end = text.length
         while (end > 0 && text[end - 1].isWhitespace()) end--
         if (end == 0) return 0
+        // The keyboard can be switched between Thai and English mid-sentence, so the script of
+        // the text — not the active layout — decides how a word boundary is computed.
+        val thai = text.any { it in '\u0E01'..'\u0E5B' }
         if (thai) {
             val iterator = BreakIterator.getWordInstance(thaiLocale)
             iterator.setText(text)

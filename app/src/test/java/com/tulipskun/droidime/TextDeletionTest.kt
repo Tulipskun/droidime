@@ -32,11 +32,15 @@ class TextDeletionTest {
     fun thaiWordDeletionUsesIcuBoundaryNotWholeSentence() {
         // Thai has no spaces: a swipe must delete one word, not the entire sentence.
         val before = "ฉันกินข้าว"
-        val start = TextDeletion.previousWordStart(before, thai = true)
+        val start = TextDeletion.previousWordStart(before)
         org.junit.Assert.assertTrue(
             "expected a word boundary before the end, got $start",
             start > 0 && start < before.length
         )
-        assertEquals(6, TextDeletion.previousWordStart("hello world", thai = false))
+        // Script comes from the text, not from whichever keyboard is currently selected.
+        val mixed = TextDeletion.previousWordStart("ฉันกินข้าว hello")
+        org.junit.Assert.assertTrue("Thai text must use ICU even when the keyboard is English",
+            mixed > 0 && mixed < "ฉันกินข้าว hello".length)
+        assertEquals(6, TextDeletion.previousWordStart("hello world"))
     }
 }

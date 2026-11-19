@@ -25,6 +25,10 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.text.InputType
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.text.TextUtils
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SoundEffectConstants
@@ -270,9 +274,9 @@ class DroidImeService : InputMethodService() {
         enterText = Color.rgb(6, 46, 111),
         specialText = Color.rgb(227, 227, 227),
         hint = Color.rgb(196, 199, 197),
-        panel = Color.rgb(31, 31, 31),
-        panelKey = Color.rgb(57, 57, 57),
-        panelFunction = Color.rgb(71, 71, 71),
+        panel = Color.rgb(30, 31, 32),
+        panelKey = Color.rgb(55, 57, 59),
+        panelFunction = Color.rgb(68, 71, 70),
         panelText = Color.rgb(226, 226, 226),
         panelDisabled = Color.rgb(108, 108, 108),
         selectionActiveText = Color.rgb(194, 231, 255)
@@ -841,10 +845,15 @@ class DroidImeService : InputMethodService() {
     private fun thaiSuggestions(before: String): List<Suggestion> {
         val dict = dictTh
         val context = NextWordModel.context(before)
-        val learned = NextWordModel.learnedNextWords(
-            context.previous, wordTransitions, 3,
+        val learnedAll = NextWordModel.learnedNextWords(
+            context.previous, wordTransitions, 8,
             script = { NextWordModel.isThaiWord(it) }
-        ).toSet()
+        )
+        val learned = learnedAll.toSet()
+        val learnedCounts = context.previous
+            ?.let { wordTransitions[NextWordModel.normalize(it)] }
+            ?.filterKeys { NextWordModel.isThaiWord(it) }
+            ?: emptyMap()
         var start = before.length
         while (start > 0 && isThai(before[start - 1]) && before.length - start < 24) start--
         val run = before.substring(start)
@@ -879,8 +888,15 @@ class DroidImeService : InputMethodService() {
                     }
                 }
             }
-            // Learned vocabulary completes alongside the shipped words.
+            // Learned continuations and the user's own vocabulary complete alongside the shipped
+            // words, the same way the English path feeds transitions into NextWordModel.
             if (completions.size < 3) {
+                val base = (dict?.maxFrequency ?: 1) + 1
+                for ((word, count) in learnedCounts) {
+                    if (word.startsWith(suffix) && completions.none { s -> s.text == word }) {
+                        completions.add(Suggestion(word, k, "", count * base + k * 1_000_000))
+                    }
+                }
                 for ((word, count) in userWords) {
                     if (!NextWordModel.isThaiWord(word)) continue
                     if (word.length > suffix.length && word.startsWith(suffix) &&
@@ -895,11 +911,15 @@ class DroidImeService : InputMethodService() {
         // Typed fast, marks dropped: "สวสด" is "สวัสดี" with its vowel/tone marks left out. When
         // nothing matches as a prefix, look up the mark-free spelling in the dictionary and in the
         // user's vocabulary, and fall back to a single-edit fix of the same mark-free form.
-        if (typedLen == 0 && completions.isEmpty() && run.length >= 2) {
+        if (run.length >= 2) {
             val stripped = run.filterNot { it in THAI_MARKS }
             val fixes = ArrayList<Suggestion>()
             dict?.strippedIndex?.get(stripped)?.let { idx ->
-                fixes.add(Suggestion(dict.words[idx], run.length, "", dict.freqs[idx]))
+                val word = dict.words[idx]
+                if (word != run) {
+                    fixes.add(Suggestion(word, run.length, "",
+                        dict.freqs[idx] + run.length * 1_000_000))
+                }
             }
             for ((word, _) in userWords) {
                 if (!NextWordModel.isThaiWord(word) || word == run) continue
@@ -908,13 +928,20 @@ class DroidImeService : InputMethodService() {
                     if (fixes.none { s -> s.text == word }) fixes.add(Suggestion(word, run.length, ""))
                 }
             }
-            completions.addAll(fixes.take(3))
+            for (fix in fixes) {
+                if (completions.any { it.text == fix.text }) continue
+                val literalFreq = dict?.let { d ->
+                    val i = d.indexOf(run); if (i >= 0) d.freqs[i] else 0
+                } ?: 0
+                if (fix.score > literalFreq || completions.size < 3) completions.add(fix)
+            }
         }
 
         if (typedLen == 0 && completions.isNotEmpty()) typedLen = completions[0].replaceLen
         if (typedLen == 0) return emptyList()
         val out = ArrayList<Suggestion>()
-        out.add(Suggestion(run.substring(run.length - typedLen), typedLen, ""))
+        val literalIsWord = (dict?.indexOf(run) ?: -1) >= 0 || userWords.containsKey(run)
+        if (literalIsWord) out.add(Suggestion(run.substring(run.length - typedLen), typedLen, ""))
         for (c in completions.sortedByDescending { it.score }) {
             if (out.size == 3) break
             out.add(c)
@@ -1254,6 +1281,7 @@ class DroidImeService : InputMethodService() {
     private fun pasteClip(id: String) {
         val clip = clips.firstOrNull { it.id == id } ?: return
         val connection = currentInputConnection ?: return
+        putClipOnClipboard(clip.text)
         connection.commitText(clip.text, 1)
         clipMenuId = null
         clipSelection = null
@@ -1571,7 +1599,8 @@ class DroidImeService : InputMethodService() {
 
     private fun typeText(value: String) {
         val connection = currentInputConnection
-        undoText = null
+        // Gboard keeps the "Undo delete" chip available after the user resumes typing; only a new
+        // destructive action invalidates it.
         if (connection != null) {
             if (language == Language.THAI && isThaiText(value)) {
                 if (thaiComposingText.isNotEmpty()) {
@@ -1742,7 +1771,7 @@ class DroidImeService : InputMethodService() {
             return
         }
         val before = connection.getTextBeforeCursor(512, 0)?.toString().orEmpty()
-        val start = TextDeletion.previousWordStart(before, language == Language.THAI)
+        val start = TextDeletion.previousWordStart(before)
         if (start < before.length) {
             undoText = before.substring(start)
             connection.deleteSurroundingText(before.length - start, 0)
@@ -1799,6 +1828,9 @@ class DroidImeService : InputMethodService() {
 
     private fun restoreUndo() {
         val text = undoText ?: return
+        // Finish any live Thai composing region before restoring, otherwise the deleted fragment
+        // is appended inside the composition and the editor can silently drop it.
+        finishThaiComposition()
         currentInputConnection?.commitText(text, 1)
         undoText = null
         afterTextChanged()
@@ -2943,7 +2975,7 @@ class DroidImeService : InputMethodService() {
             if (cell.style == KeyStyle.HEADER_CLOSE) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
-                iconFill.color = colors.special
+                iconFill.color = colors.panelKey
                 canvas.drawCircle(cx, cy, minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
                 iconStroke.color = ink
                 iconStroke.strokeWidth = dpf(2.5f)
@@ -2979,7 +3011,7 @@ class DroidImeService : InputMethodService() {
             }
             if (clipPanelVisible && cell.label == "Toggle") {
                 val on = preferences.getBoolean("clipboard", true)
-                iconFill.color = colors.special
+                iconFill.color = colors.panelKey
                 canvas.drawCircle(cell.rect.centerX(), cell.rect.centerY(),
                     minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
                 val sw = dpf(34f)
@@ -3005,7 +3037,7 @@ class DroidImeService : InputMethodService() {
             if (clipPanelVisible && cell.label in editLabels) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
-                iconFill.color = colors.special
+                iconFill.color = colors.panelKey
                 canvas.drawCircle(cx, cy, minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
                 iconStroke.color = ink
                 iconStroke.strokeWidth = dpf(2f)
@@ -3061,7 +3093,7 @@ class DroidImeService : InputMethodService() {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
                 val arm = dpf(9f)
-                iconStroke.color = colors.hint
+                iconStroke.color = colors.panelText
                 iconStroke.strokeWidth = dpf(3f)
                 iconStroke.strokeCap = Paint.Cap.ROUND
                 when (cell.label) {
@@ -3125,8 +3157,14 @@ class DroidImeService : InputMethodService() {
                 val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
                 // Gboard keeps Select/Select all bright; it greys Cut/Copy without a selection and
                 // Paste when the clipboard is empty.
+                val emptyField = currentInputConnection
+                    ?.getExtractedText(ExtractedTextRequest(), 0)?.text?.isNullOrEmpty() == true
+                val systemClip = try {
+                    clipboardManager()?.hasPrimaryClip() == true
+                } catch (_: Exception) { false }
                 val disabled = when (cell.label) {
-                    "Paste" -> clips.isEmpty()
+                    "Paste" -> !systemClip
+                    "Select all" -> emptyField
                     "Cut", "Copy" -> !hasSelection
                     else -> false
                 }
@@ -3156,12 +3194,22 @@ class DroidImeService : InputMethodService() {
             val textLeft = cell.rect.left + dpf(if (checkboxMode) 44f else 16f)
             val maxW = (cell.rect.right - textLeft - dpf(if (checkboxMode) 12f else 40f))
                 .coerceAtLeast(1f)
-            var shown = text
-            while (shown.length > 1 && textPaint.measureText(shown) > maxW) shown = shown.dropLast(1)
-            if (shown.length < text.length) shown = shown.dropLast(1) + "…"
-            val m = textPaint.fontMetrics
+            // Gboard wraps a clip card up to five lines; the old single-line ellipsis made long
+            // copied text unreadable.
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(shown, textLeft, py - (m.ascent + m.descent) / 2f, textPaint)
+            val layout = StaticLayout.Builder.obtain(
+                text, 0, text.length, TextPaint(textPaint), maxW.toInt()
+            )
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(0f, 1f)
+                .setIncludePad(false)
+                .setMaxLines(5)
+                .setEllipsize(TextUtils.TruncateAt.END)
+                .build()
+            canvas.save()
+            canvas.translate(textLeft, cell.rect.centerY() - layout.height / 2f)
+            layout.draw(canvas)
+            canvas.restore()
             textPaint.textAlign = Paint.Align.CENTER
         }
 
