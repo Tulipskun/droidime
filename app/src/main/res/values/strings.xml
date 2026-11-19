@@ -21,4 +21,11 @@
     <string name="update_check_failed">Could not check for updates</string>
     <string name="update_version_missing">Release version is missing</string>
     <string name="update_apk_missing">Release APK is missing</string>
+    <string name="clipboard_title">Clipboard</string>
+    <string name="clip_recent">Recent</string>
+    <string name="clip_pinned">Pinned</string>
+    <string name="clip_edit">Edit</string>
+    <string name="clip_done">Done</string>
+    <string name="clip_delete">Delete</string>
+    <string name="editor_title">Text editing</string>
 </resources>

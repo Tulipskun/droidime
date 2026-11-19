@@ -229,6 +229,7 @@ class DroidImeService : InputMethodService() {
         val enter: Int,
         val text: Int,
         val enterText: Int,
+        val specialText: Int,
         val hint: Int,
         // Gboard uses a different surface for its panels than for the letter keys.
         val panel: Int,
@@ -247,6 +248,7 @@ class DroidImeService : InputMethodService() {
         enter = Color.rgb(189, 221, 220),
         text = Color.rgb(35, 39, 39),
         enterText = Color.rgb(36, 65, 65),
+        specialText = Color.rgb(36, 65, 65),
         hint = Color.rgb(102, 102, 102),
         panel = Color.rgb(236, 239, 241),
         panelKey = Color.WHITE,
@@ -255,14 +257,17 @@ class DroidImeService : InputMethodService() {
         panelDisabled = Color.rgb(95, 99, 104)
     )
     private val darkPalette = Palette(
-        background = Color.rgb(20, 24, 24),
-        key = Color.rgb(31, 35, 35),
-        special = Color.rgb(19, 48, 48),
-        active = Color.rgb(19, 48, 48),
-        enter = Color.rgb(19, 48, 48),
-        text = Color.rgb(218, 221, 220),
-        enterText = Color.rgb(147, 176, 175),
-        hint = Color.rgb(147, 150, 149),
+        // Sampled from Gboard's dark theme on the real device: toolbar/key surface #1e1f20,
+        // letter keys #37393b, function keys #444746, IME action key #a8c7fa.
+        background = Color.rgb(30, 31, 32),
+        key = Color.rgb(55, 57, 59),
+        special = Color.rgb(68, 71, 70),
+        active = Color.rgb(68, 71, 70),
+        enter = Color.rgb(168, 199, 250),
+        text = Color.rgb(227, 227, 227),
+        enterText = Color.rgb(6, 46, 111),
+        specialText = Color.rgb(227, 227, 227),
+        hint = Color.rgb(196, 199, 197),
         panel = Color.rgb(31, 31, 31),
         panelKey = Color.rgb(57, 57, 57),
         panelFunction = Color.rgb(71, 71, 71),
@@ -685,7 +690,7 @@ class DroidImeService : InputMethodService() {
         val enabled = enabledLanguages()
         val saved = preferences.getString("current_language", language.code)
         language = enabled.firstOrNull { it.code == saved } ?: enabled.first()
-        val height = preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360)
+        val height = preferences.getInt("keyboard_height_dp", 320).coerceIn(220, 360)
         val target = view ?: return
         val params = target.layoutParams ?: ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1342,17 +1347,22 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun buildEditorRows(): List<List<Pair<Float, Cell?>>> {
-        fun action(label: String) = Cell(label, KeyStyle.CLIP, null, action = { editorAction(label) })
+        fun action(label: String, style: KeyStyle = KeyStyle.CLIP) =
+            Cell(label, style, null, action = { editorAction(label) })
         val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false
-        val topAction = if (hasSelection) action("Cut") else action("Select all")
+        // Gboard tints the right-hand action column and Delete with its function-key colour.
+        val topAction = action(if (hasSelection) "Cut" else "Select all", KeyStyle.SPECIAL)
         // Gboard's text-editing panel: tall arrow keys, a select/copy column and Home/End/Delete.
         return listOf(
             listOf(3f to Cell("", KeyStyle.HEADER, null, action = {}),
                 1f to Cell("Close", KeyStyle.HEADER_CLOSE, null, action = { closeEditorPanel() })),
             listOf(1f to action("←"), 1f to action("↑"), 1f to null, 1f to topAction),
-            listOf(1f to null, 1f to action("Select"), 1f to null, 1f to action("Copy")),
-            listOf(1f to null, 1f to action("↓"), 1f to action("→"), 1f to action("Paste")),
-            listOf(1.5f to action("Home"), 1.5f to action("End"), 1f to action("Delete"))
+            listOf(1f to null, 1f to action("Select"), 1f to null,
+                1f to action("Copy", KeyStyle.SPECIAL)),
+            listOf(1f to null, 1f to action("↓"), 1f to action("→"),
+                1f to action("Paste", KeyStyle.SPECIAL)),
+            listOf(1.5f to action("Home"), 1.5f to action("End"),
+                1f to action("Delete", KeyStyle.SPECIAL))
         )
     }
 
@@ -1956,7 +1966,7 @@ class DroidImeService : InputMethodService() {
         // whenever the IME measures this view with anything other than an exact size.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val w = MeasureSpec.getSize(widthMeasureSpec)
-            val desired = dp(preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360) + STRIP_EXTRA_DP)
+            val desired = dp(preferences.getInt("keyboard_height_dp", 320).coerceIn(220, 360) + STRIP_EXTRA_DP)
             val h = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
                 MeasureSpec.getSize(heightMeasureSpec)
             } else {
@@ -2099,23 +2109,21 @@ class DroidImeService : InputMethodService() {
                 1f to closeClipboardCell(), 2.4f to headerCell(),
                 0.8f to clipToggleCell(), 0.8f to clipEditCell()
             ))
-            if (panel.isEmpty()) {
-                rows.add(listOf(1f to emptyCell()))
-                return rows
-            }
+            // Gboard shows only the header when the clipboard is empty — no illustration or text.
+            if (panel.isEmpty()) return rows
             // Gboard reads its column count from a theme attribute: 2 on phones, more on wide
             // windows. Use the same width class as the key label rules.
             val columns = if (resources.displayMetrics.widthPixels /
                 resources.displayMetrics.density >= 600f) 3 else 2
             if (recent.isNotEmpty()) {
-                rows.add(listOf(1f to sectionCell("RECENT")))
+                rows.add(listOf(1f to sectionCell(resources.getString(R.string.clip_recent))))
                 recent.chunked(columns).forEach { group ->
                     rows.add(group.map { clip -> 1f to clipCell(clip.id) } +
                         List(columns - group.size) { 1f to null })
                 }
             }
             if (pinned.isNotEmpty()) {
-                rows.add(listOf(1f to sectionCell("PINNED")))
+                rows.add(listOf(1f to sectionCell(resources.getString(R.string.clip_pinned))))
                 pinned.chunked(columns).forEach { group ->
                     rows.add(group.map { clip -> 1f to clipCell(clip.id) } +
                         List(columns - group.size) { 1f to null })
@@ -2124,7 +2132,8 @@ class DroidImeService : InputMethodService() {
             return rows
         }
 
-        private fun headerCell(): Cell = Cell("Clipboard", KeyStyle.HEADER, null, action = {})
+        private fun headerCell(): Cell =
+            Cell(resources.getString(R.string.clipboard_title), KeyStyle.HEADER, null, action = {})
 
         // Gboard's clipboard header has a switch for keeping copied items and a pencil button
         // for edit mode. Both are drawn on the canvas like the rest of this keyboard.
@@ -2135,7 +2144,11 @@ class DroidImeService : InputMethodService() {
         })
 
         private fun clipEditCell(): Cell {
-            val label = when { clipEdit && clipSelection != null -> "Delete"; clipEdit -> "Done"; else -> "Edit" }
+            val label = when {
+                clipEdit && clipSelection != null -> resources.getString(R.string.clip_delete)
+                clipEdit -> resources.getString(R.string.clip_done)
+                else -> resources.getString(R.string.clip_edit)
+            }
             return Cell(label, KeyStyle.CLIP, null, action = {
                 val selected = clipSelection
                 if (clipEdit && selected != null) deleteClip(selected) else toggleClipEdit()
@@ -2735,7 +2748,8 @@ class DroidImeService : InputMethodService() {
             shape.draw(canvas)
 
             val ink = when (cell.style) {
-                KeyStyle.ENTER, KeyStyle.SPECIAL, KeyStyle.ACTIVE -> colors.enterText
+                KeyStyle.ENTER -> colors.enterText
+                KeyStyle.SPECIAL, KeyStyle.ACTIVE -> colors.specialText
                 else -> colors.text
             }
             val glyph = cell.glyph
@@ -2948,7 +2962,7 @@ class DroidImeService : InputMethodService() {
                 textPaint.textSize = dpf(20f)
                 val m = textPaint.fontMetrics
                 val cy = cell.rect.centerY() - (m.ascent + m.descent) / 2f
-                val title = if (editorPanelVisible) "Text editing" else cell.label
+                val title = if (editorPanelVisible) resources.getString(R.string.editor_title) else cell.label
                 textPaint.textAlign = Paint.Align.LEFT
                 canvas.drawText(title, cell.rect.left + dpf(14f), cy, textPaint)
                 textPaint.textAlign = Paint.Align.CENTER
@@ -2975,7 +2989,12 @@ class DroidImeService : InputMethodService() {
                 )
                 return
             }
-            if (clipPanelVisible && cell.label in setOf("Edit", "Done", "Delete")) {
+            val editLabels = setOf(
+                resources.getString(R.string.clip_edit),
+                resources.getString(R.string.clip_done),
+                resources.getString(R.string.clip_delete)
+            )
+            if (clipPanelVisible && cell.label in editLabels) {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
                 iconFill.color = colors.special
@@ -3086,7 +3105,7 @@ class DroidImeService : InputMethodService() {
                 canvas.drawCircle(px, py - dpf(3f), dpf(3.2f), iconStroke)
                 canvas.drawLine(px, py, px, py + dpf(6f), iconStroke)
             }
-            textPaint.color = if (cell.style == KeyStyle.SPECIAL) colors.enterText else ink
+            textPaint.color = if (cell.style == KeyStyle.SPECIAL) colors.specialText else ink
             textPaint.typeface = Typeface.DEFAULT
             if (editorPanelVisible) {
                 val hasSelection = currentInputConnection?.getSelectedText(0).isNullOrEmpty() == false

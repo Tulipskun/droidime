@@ -1,0 +1,9 @@
+<resources>
+    <string name="clipboard_title">คลิปบอร์ด</string>
+    <string name="clip_recent">ล่าสุด</string>
+    <string name="clip_pinned">ปักหมุด</string>
+    <string name="clip_edit">แก้ไข</string>
+    <string name="clip_done">เสร็จ</string>
+    <string name="clip_delete">ลบ</string>
+    <string name="editor_title">การแก้ไขข้อความ</string>
+</resources>

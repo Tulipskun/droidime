@@ -397,7 +397,7 @@ class MainActivity : Activity() {
         languageCard.addView(switchRow("English", englishCheck))
 
         val sizeCard = settingsSection()
-        val currentHeight = preferences.getInt("keyboard_height_dp", 250).coerceIn(220, 360)
+        val currentHeight = preferences.getInt("keyboard_height_dp", 320).coerceIn(220, 360)
         val heightLabel = sectionTitle("Keyboard height · ${currentHeight} dp")
         sizeCard.addView(heightLabel)
         sizeCard.addView(SeekBar(this).apply {
