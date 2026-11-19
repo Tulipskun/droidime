@@ -3220,7 +3220,7 @@ class DroidImeService : InputMethodService() {
                 val cy = cell.rect.centerY()
                 val arm = dpf(9f)
                 iconStroke.color = colors.panelText
-                iconStroke.strokeWidth = dpf(3f)
+                iconStroke.strokeWidth = dpf(1.6f)
                 iconStroke.strokeCap = Paint.Cap.ROUND
                 when (cell.label) {
                     "←" -> {
@@ -3303,7 +3303,7 @@ class DroidImeService : InputMethodService() {
                     val arm = dpf(9f)
                     iconStroke.color = if (actionKey == "Delete" && disabled) colors.panelDisabled
                         else colors.panelText
-                    iconStroke.strokeWidth = dpf(2.5f)
+                    iconStroke.strokeWidth = dpf(1.6f)
                     iconStroke.strokeCap = Paint.Cap.ROUND
                     when (actionKey) {
                         "Home" -> {
@@ -3333,7 +3333,13 @@ class DroidImeService : InputMethodService() {
                     return
                 }
                 val display = cell.label
-                textPaint.textSize = dpf(15f)
+                var labelSize = dpf(15f)
+                textPaint.textSize = labelSize
+                val maxLabelW = (cell.rect.width() - dpf(8f)).coerceAtLeast(1f)
+                while (labelSize > dpf(9f) && textPaint.measureText(display) > maxLabelW) {
+                    labelSize -= dpf(1f)
+                    textPaint.textSize = labelSize
+                }
                 val m = textPaint.fontMetrics
                 textPaint.textAlign = Paint.Align.CENTER
                 canvas.drawText(display, cell.rect.centerX(),
