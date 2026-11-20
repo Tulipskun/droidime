@@ -14,7 +14,8 @@ Native Android keyboard with Thai (Kedmanee) and English layouts.
 - Enter key shows the field's action (Go, Search, Send, Next, Done).
 - Delete replaces a selection, removes one visible character at a time (Thai vowel and tone marks stay with their consonant and emoji sequences stay together), repeats when held, and swiping left from Delete removes the word before the caret.
 - Corner hints on keys; long-press types them (English: symbols, Thai: the shift-layer character).
-- Settings: enabled languages, keyboard height, light/dark/system theme, vibration (with strength), key sound, auto-capitalization, double-space period, key hints, a number row per language, and the clipboard panel.
+- Settings: enabled languages, keyboard height, one-handed mode (off/left/right, also cycled by the Resize button in the long-press tools panel), light/dark/system theme, vibration (with strength), key sound, auto-capitalization, double-space period, key hints, a number row per language, and the clipboard panel.
+- After accepting a correction, the toolbar briefly offers Undo correction to restore the word as it was typed; typing anything else dismisses it.
 - In-app update check against the latest GitHub release, and a local crash log viewer.
 
 ## Remote control (MCP)

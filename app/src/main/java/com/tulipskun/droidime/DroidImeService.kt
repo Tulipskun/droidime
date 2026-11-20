@@ -31,6 +31,7 @@ import android.text.Editable
 import android.text.TextPaint
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SoundEffectConstants
@@ -348,6 +349,10 @@ class DroidImeService : InputMethodService() {
     private var symbolPage = 0
     private var numberPad = false
     private var navigationInset = 0
+    private var oneHanded = "off"
+    // The original text replaced by the last accepted correction, offered once as an undo chip.
+    private data class CorrectionUndo(val typed: String, val committedLength: Int)
+    private var correctionUndo: CorrectionUndo? = null
     private var keyboardView: KeyboardCanvasView? = null
     private val deleteHandler = Handler(Looper.getMainLooper())
     private var deleteRepeat: Runnable? = null
@@ -635,6 +640,7 @@ class DroidImeService : InputMethodService() {
         // The panel belongs to one editing session: leaving the field closes it.
         clipSelection.clear()
         clipMenuId = null
+        correctionUndo = null
         if (keyboardView == null) {
             shifted = false
             return
@@ -700,13 +706,42 @@ class DroidImeService : InputMethodService() {
         val saved = preferences.getString("current_language", language.code)
         language = enabled.firstOrNull { it.code == saved } ?: enabled.first()
         val height = preferences.getInt("keyboard_height_dp", 320).coerceIn(220, 360)
+        oneHanded = preferences.getString("one_handed", "off") ?: "off"
         val target = view ?: return
-        val params = target.layoutParams ?: ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(height + STRIP_EXTRA_DP)
-        )
+        // Gravity needs FrameLayout.LayoutParams: the IME places the input view in a FrameLayout.
+        val params = target.layoutParams as? android.widget.FrameLayout.LayoutParams
+            ?: android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(height + STRIP_EXTRA_DP)
+            )
         params.height = dp(height + STRIP_EXTRA_DP)
+        params.width = KeyboardLayout.widthPx(resources.displayMetrics.widthPixels, oneHanded)
+            ?: ViewGroup.LayoutParams.MATCH_PARENT
+        params.gravity = when (KeyboardLayout.edge(oneHanded)) {
+            0 -> Gravity.BOTTOM or Gravity.START
+            1 -> Gravity.BOTTOM or Gravity.END
+            else -> Gravity.BOTTOM
+        }
         target.layoutParams = params
+        fillWindowBackground()
+    }
+
+    // In one-handed mode the view no longer covers the IME window, so paint the exposed strip the
+    // same colour as the keyboard instead of showing the app through a transparent gap.
+    private fun fillWindowBackground() {
+        if (oneHanded == "off") return
+        getWindow().window?.decorView?.setBackgroundColor(palette.background)
+    }
+
+    // Wired to the "Resize" button of the tools panel: off -> left -> right -> off.
+    private fun cycleOneHanded() {
+        val next = KeyboardLayout.nextMode(oneHanded)
+        preferences.edit().putString("one_handed", next).apply()
+        oneHanded = next
+        loadSettings()
+        keyboardView?.requestLayout()
+        keyboardView?.rebuild()
+        closeAccessPoints()
     }
 
     private fun enabledLanguages(): List<Language> {
@@ -741,6 +776,7 @@ class DroidImeService : InputMethodService() {
                 }
             }
         }
+        fillWindowBackground()
     }
 
     private fun renderKeyboard() {
@@ -1111,6 +1147,7 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun commitGlide(words: List<String>, thai: Boolean) {
+        correctionUndo = null
         val connection = currentInputConnection ?: return
         if (words.isEmpty()) return
         // A glide word is committed with the strip's capitalisation and spacing, so it can be
@@ -1157,16 +1194,38 @@ class DroidImeService : InputMethodService() {
             preferences.edit().putInt(GLIDE_ALTERNATIVES, preferences.getInt(GLIDE_ALTERNATIVES, 0) + 1).apply()
             markLastGlideRejected()
         }
+        val typed = connection.getTextBeforeCursor(suggestion.replaceLen, 0)?.toString().orEmpty()
+        val replacement = suggestion.text + suggestion.append
         connection.beginBatchEdit()
         connection.deleteSurroundingText(suggestion.replaceLen, 0)
-        connection.commitText(suggestion.text + suggestion.append, 1)
+        connection.commitText(replacement, 1)
         connection.endBatchEdit()
+        // Gboard offers one tap to restore what was typed when the picked word is a correction,
+        // not when it merely completed a correctly typed prefix.
+        correctionUndo = if (typed.isNotEmpty() && !typed.equals(suggestion.text, ignoreCase = true)) {
+            CorrectionUndo(typed, replacement.length)
+        } else {
+            null
+        }
         // Picking a suggestion confirms the word, so it joins the personal dictionary too, and the
         // strip keeps offering it until the text changes.
         learnWord(suggestion.text)
         learnWordTransition(context?.previous, suggestion.text)
         lastSpaceTap = 0L
         afterTextChanged()
+        keyboardView?.rebuild()
+    }
+
+    private fun undoCorrection() {
+        val pending = correctionUndo ?: return
+        val connection = currentInputConnection ?: return
+        correctionUndo = null
+        undoStack.clear()
+        finishThaiComposition()
+        if (deleteBefore(pending.committedLength)) connection.commitText(pending.typed, 1)
+        lastSpaceTap = 0L
+        afterTextChanged()
+        keyboardView?.rebuild()
     }
 
     // ---- Personal dictionary ---------------------------------------------------------------
@@ -1285,6 +1344,7 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun pasteClip(id: String) {
+        correctionUndo = null
         val clip = clips.firstOrNull { it.id == id } ?: return
         val connection = currentInputConnection ?: return
         putClipOnClipboard(clip.text)
@@ -1674,6 +1734,7 @@ class DroidImeService : InputMethodService() {
 
     private fun closeEmojiPanel() { emojiPanelVisible = false; renderKeyboard() }
     private fun insertEmoji(emoji: String) {
+        correctionUndo = null
         currentInputConnection?.commitText(emoji, 1)
         recentEmojis.remove(emoji)
         recentEmojis.add(0, emoji)
@@ -1733,6 +1794,7 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun typeText(value: String) {
+        correctionUndo = null
         val connection = currentInputConnection
         // Gboard keeps the "Undo delete" chip available after the user resumes typing; only a new
         // destructive action invalidates it.
@@ -1845,6 +1907,7 @@ class DroidImeService : InputMethodService() {
 
     // Two quick spaces after a word become ". " (English only).
     private fun typeSpace() {
+        correctionUndo = null
         val connection = currentInputConnection ?: return
         if (shiftManual && shifted && !shiftLocked && enabledLanguages().size > 1) {
             // Gboard: Shift+Space switches between enabled keyboards. Auto-caps never does this.
@@ -1886,6 +1949,7 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun deleteWord() {
+        correctionUndo = null
         val connection = currentInputConnection ?: return
         finishThaiComposition()
         thaiComposingText = ""
@@ -1925,6 +1989,7 @@ class DroidImeService : InputMethodService() {
     }
 
     private fun deleteOne(updateShift: Boolean = true) {
+        correctionUndo = null
         val connection = currentInputConnection ?: return
         markLastTouchCorrected()
 
@@ -2253,21 +2318,27 @@ class DroidImeService : InputMethodService() {
             fun tool(icon: ToolIcon, name: String): Cell =
                 Cell(name, KeyStyle.TOOLBAR, null, icon = icon, action = {})
             // Gboard keeps the undo affordance in the toolbar only; the candidate strip never
-            // sacrifices a word slot for an Undo chip.
-            val middle: List<Cell> = if (suggestions.isEmpty()) {
+            // sacrifices a word slot for an Undo chip. Right after accepting a correction the
+            // toolbar returns briefly so the original typed word can be restored.
+            val middle: List<Cell> = if (suggestions.isEmpty() || correctionUndo != null) {
                 // Gboard's toolbar on this device: grid, undo, translate, clipboard, settings, expand.
-                listOf(
-                    tool(ToolIcon.UNDO, "Undo").withAction {
-                        when {
-                            deletedClip != null -> restoreClip()
-                            undoStack.isNotEmpty() -> restoreUndo()
-                            else -> sendCtrl(KeyEvent.KEYCODE_Z)
-                        }
-                    },
-                    tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() },
-                    tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() },
-                    tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() }
-                )
+                val undo = tool(ToolIcon.UNDO, "Undo").withAction {
+                    when {
+                        deletedClip != null -> restoreClip()
+                        undoStack.isNotEmpty() -> restoreUndo()
+                        else -> sendCtrl(KeyEvent.KEYCODE_Z)
+                    }
+                }
+                buildList {
+                    correctionUndo?.let { add(tool(ToolIcon.UNDO, "Undo correction").withAction { undoCorrection() }) }
+                    add(undo)
+                    // Keep the strip at four icons so the measured Gboard icon pitch still fits.
+                    if (correctionUndo == null) {
+                        add(tool(ToolIcon.TRANSLATE, "Switch language").withAction { switchLanguage() })
+                    }
+                    add(tool(ToolIcon.CLIPBOARD, "Clipboard").withAction { openClipboardPanel() })
+                    add(tool(ToolIcon.SETTINGS, "Keyboard settings").withAction { openSettings() })
+                }
             } else {
                 val slots = List(3) { i ->
                     val s = suggestions.getOrNull(i)
@@ -2756,7 +2827,7 @@ class DroidImeService : InputMethodService() {
                 listOf(pill("Clipboard") { openClipboardPanel() },
                     pill("Floating") { closeAccessPoints() }),
                 listOf(pill("GIF") { closeAccessPoints() },
-                    pill("Resize") { closeAccessPoints() }),
+                    pill("Resize") { cycleOneHanded() }),
                 listOf(pill("Stickers") { closeAccessPoints() },
                     pill("Language") { switchLanguage() }),
                 listOf(pill("Emoji") { showEmoji() },
@@ -4088,7 +4159,7 @@ class DroidImeService : InputMethodService() {
 
         private val SETTINGS_KEYS = setOf(
             "keyboard_height_dp", "theme", "number_row_en", "number_row_th", "key_hints", "suggestions",
-            "clipboard"
+            "clipboard", "one_handed"
         )
 
         private const val USER_DICT = "user_dict"

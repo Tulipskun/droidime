@@ -414,6 +414,25 @@ class MainActivity : Activity() {
             })
         })
 
+        sizeCard.addView(divider())
+        sizeCard.addView(sectionTitle("One-handed mode"))
+        val currentOneHanded = preferences.getString("one_handed", "off") ?: "off"
+        val oneHandedGroup = RadioGroup(this).apply { orientation = LinearLayout.VERTICAL }
+        listOf("off" to "Off", "left" to "Left", "right" to "Right").forEach { (value, name) ->
+            oneHandedGroup.addView(RadioButton(this).apply {
+                id = View.generateViewId()
+                text = name
+                textSize = 15f
+                tag = value
+                isChecked = value == currentOneHanded
+            })
+        }
+        oneHandedGroup.setOnCheckedChangeListener { group, checkedId ->
+            val value = group.findViewById<RadioButton>(checkedId)?.tag as? String
+            if (value != null) preferences.edit().putString("one_handed", value).apply()
+        }
+        sizeCard.addView(oneHandedGroup)
+
         val themeCard = settingsSection()
         themeCard.addView(sectionTitle("Keyboard theme"))
         val currentTheme = preferences.getString("theme", "system")
