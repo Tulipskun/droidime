@@ -76,7 +76,7 @@ class DroidImeService : InputMethodService() {
 
     // Vector icons drawn on keys instead of font glyphs, so they look the same on every device
     // (the globe emoji, for one, renders as a coloured picture on Android).
-    private enum class KeyGlyph { SHIFT, SHIFT_ON, CAPS, DELETE, ENTER, GLOBE, NUMBER_PAD }
+    private enum class KeyGlyph { SHIFT, SHIFT_ON, CAPS, DELETE, ENTER, SEARCH, GLOBE, NUMBER_PAD }
 
     // One tappable word suggestion: replace the last `replaceLen` characters with `text + append`.
     // `score` is the ranking signal used to order the strip (higher is better).
@@ -266,23 +266,23 @@ class DroidImeService : InputMethodService() {
         selectionActiveText = Color.WHITE
     )
     private val darkPalette = Palette(
-        // Sampled from Gboard's dark theme on the real device: toolbar/key surface #1e1f20,
-        // letter keys #37393b, function keys #444746, IME action key #a8c7fa.
-        background = Color.rgb(30, 31, 32),
-        key = Color.rgb(55, 57, 59),
-        special = Color.rgb(68, 71, 70),
-        active = Color.rgb(68, 71, 70),
-        enter = Color.rgb(168, 199, 250),
-        text = Color.rgb(227, 227, 227),
-        enterText = Color.rgb(6, 46, 111),
-        specialText = Color.rgb(227, 227, 227),
-        hint = Color.rgb(196, 199, 197),
-        panel = Color.rgb(30, 31, 32),
-        panelKey = Color.rgb(55, 57, 59),
-        panelFunction = Color.rgb(68, 71, 70),
+        // Sampled from the seven Gboard screenshots supplied for this device (JPG pixels):
+        // surface #1F1F1F, keys #393939, function/action keys #474747, ink #E2E2E2, hints #C6C6C6.
+        background = Color.rgb(31, 31, 31),
+        key = Color.rgb(57, 57, 57),
+        special = Color.rgb(71, 71, 71),
+        active = Color.rgb(71, 71, 71),
+        enter = Color.rgb(71, 71, 71),
+        text = Color.rgb(226, 226, 226),
+        enterText = Color.rgb(226, 226, 226),
+        specialText = Color.rgb(226, 226, 226),
+        hint = Color.rgb(198, 198, 198),
+        panel = Color.rgb(31, 31, 31),
+        panelKey = Color.rgb(57, 57, 57),
+        panelFunction = Color.rgb(71, 71, 71),
         panelText = Color.rgb(226, 226, 226),
-        panelDisabled = Color.rgb(108, 108, 108),
-        selectionActiveText = Color.rgb(194, 231, 255)
+        panelDisabled = Color.rgb(138, 138, 138),
+        selectionActiveText = Color.rgb(226, 226, 226)
     )
 
     private var suggestions: List<Suggestion> = emptyList()
@@ -431,10 +431,11 @@ class DroidImeService : InputMethodService() {
         listOf("£", "¢", "€", "¥", "^", "°", "=", "{", "}", "\\"),
         listOf("%", "©", "®", "™", "✓", "[", "]")
     )
+    // Gboard's numeric pad: a symbol column on each side of the 3x3 digit grid.
     private val padRows = listOf(
-        listOf("1", "2", "3", "-"),
-        listOf("4", "5", "6", "."),
-        listOf("7", "8", "9", ",")
+        listOf("+", "1", "2", "3", "%"),
+        listOf("-", "4", "5", "6", "–"),
+        listOf("*", "7", "8", "9", DELETE)
     )
 
     private val preferences by lazy {
@@ -2302,7 +2303,14 @@ class DroidImeService : InputMethodService() {
                     if (symbols) slots.add(specialWidth to pageKeyCell())
                     else slots.add(specialWidth to shiftCell())
                 }
-                row.forEach { key -> slots.add(1f to letterCell(key)) }
+                row.forEachIndexed { i, key ->
+                    if (numberPad) {
+                        val weight = if (i == 0 || i == row.lastIndex) 0.86f else 1.14f
+                        slots.add(weight to padCell(key))
+                    } else {
+                        slots.add(1f to letterCell(key))
+                    }
+                }
                 if (lastRow) slots.add(specialWidth to deleteCell())
                 if (row.size == 9) slots.add(0.5f to null)
                 built.add(slots)
@@ -2362,9 +2370,8 @@ class DroidImeService : InputMethodService() {
             return listOf(grid) + middle + expand
         }
 
-        // The clipboard panel: a header (close arrow, edit action), then one full-width card per
-        // clip. Pinned clips come first with a pin marker at the card's right edge, then recent
-        // copies — the same two sections Gboard shows.
+        // The clipboard panel: a header (back arrow, sync toggle, edit pencil), then a two-column
+        // grid with the Recent section above Pinned, matching the supplied Gboard screenshots.
         private fun buildClipRows(): List<List<Pair<Float, Cell?>>> {
             val rows = mutableListOf<List<Pair<Float, Cell?>>>()
             val panel = clipsForPanel()
@@ -2496,6 +2503,10 @@ class DroidImeService : InputMethodService() {
             out.add(last)
         }
 
+        // Numeric-pad keys are plain text keys except for the trailing delete key.
+        private fun padCell(key: String): Cell = if (key == DELETE) deleteCell()
+            else Cell(key, KeyStyle.NORMAL, null, action = { typeText(key) })
+
         private fun letterCell(key: String): Cell {
             val showHints = preferences.getBoolean("key_hints", true)
             val label = when {
@@ -2543,13 +2554,8 @@ class DroidImeService : InputMethodService() {
         private fun bottomRow(): List<Pair<Float, Cell?>> {
             val slots = mutableListOf<Pair<Float, Cell?>>()
             if (numberPad) {
-                slots.add(1.25f to Cell("?123", KeyStyle.SPECIAL, null, pill = true, action = {
-                    numberPad = false
-                    symbols = true
-                    symbolPage = 0
-                    renderKeyboard()
-                }))
-                slots.add(1.25f to Cell("ABC", KeyStyle.SPECIAL, null, pill = true, action = {
+                // Gboard's pad footer: ABC, comma, !?#, 0, =, ., action key.
+                slots.add(1.2f to Cell("ABC", KeyStyle.SPECIAL, null, pill = true, action = {
                     numberPad = false
                     symbols = false
                     if (!shiftLocked) {
@@ -2558,9 +2564,17 @@ class DroidImeService : InputMethodService() {
                     }
                     renderKeyboard()
                 }))
-                slots.add(2f to Cell("0", KeyStyle.NORMAL, null, action = { typeText("0") }))
-                slots.add(1.25f to deleteCell())
-                slots.add(1.3f to enterCell())
+                slots.add(0.85f to Cell(",", KeyStyle.SPECIAL, null, action = { typeText(",") }))
+                slots.add(1.05f to Cell("!?#", KeyStyle.SPECIAL, null, action = {
+                    numberPad = false
+                    symbols = true
+                    symbolPage = 0
+                    renderKeyboard()
+                }))
+                slots.add(1.5f to Cell("0", KeyStyle.NORMAL, null, action = { typeText("0") }))
+                slots.add(0.85f to Cell("=", KeyStyle.SPECIAL, null, action = { typeText("=") }))
+                slots.add(0.7f to Cell(".", KeyStyle.SPECIAL, null, action = { typeText(".") }))
+                slots.add(1.25f to enterCell())
             } else {
                 val morePage = symbols && symbolPage == 1
                 val leftSide = when {
@@ -2614,7 +2628,11 @@ class DroidImeService : InputMethodService() {
         private fun enterCell(): Cell {
             val label = enterLabel()
             return Cell(label, KeyStyle.ENTER, null, pill = true,
-                glyph = if (label == ENTER) KeyGlyph.ENTER else null,
+                glyph = when (label) {
+                    ENTER -> KeyGlyph.ENTER
+                    "Search" -> KeyGlyph.SEARCH
+                    else -> null
+                },
                 action = { sendEnter() })
         }
 
@@ -2628,6 +2646,8 @@ class DroidImeService : InputMethodService() {
         // heights (the bottom row is added separately) and the gap, in reference pixels.
         private fun rowSpec(contentRows: Int, numberRowFirst: Boolean): Pair<List<Float>, Float> =
             when {
+                // The numeric pad's three rows are packed tightly, unlike the letter pages.
+                contentRows == 3 && numberPad -> List(3) { 152f } to 12f
                 contentRows == 3 -> List(3) { 134.5f } to 50f
                 contentRows == 4 && numberRowFirst -> listOf(118f, 126f, 126f, 126f) to 17.5f
                 contentRows == 4 -> List(4) { 121f } to 17.5f
@@ -3155,6 +3175,18 @@ class DroidImeService : InputMethodService() {
                         lineTo(tipX + head, lineY + head)
                     }
                     canvas.drawPath(path, iconStroke)
+                }
+                KeyGlyph.SEARCH -> {
+                    // Gboard shows a magnifier instead of the word "Search" on the action key.
+                    val r = (dpf(19.9f) - sw) / 2f
+                    canvas.drawCircle(cx - dpf(2.5f), cy - dpf(2.5f), r * 0.72f, iconStroke)
+                    val handle = dpf(8.5f)
+                    canvas.drawLine(
+                        cx - dpf(2.5f) + r * 0.72f * 0.707f,
+                        cy - dpf(2.5f) + r * 0.72f * 0.707f,
+                        cx - dpf(2.5f) + handle,
+                        cy - dpf(2.5f) + handle, iconStroke
+                    )
                 }
                 KeyGlyph.NUMBER_PAD -> {
                     // Two stacked rows of digits, 60px tall as measured, centred on the key.
