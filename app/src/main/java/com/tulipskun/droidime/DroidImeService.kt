@@ -2558,8 +2558,8 @@ class DroidImeService : InputMethodService() {
         private fun rowSpec(contentRows: Int, numberRowFirst: Boolean): Pair<List<Float>, Float> =
             when {
                 contentRows == 3 -> List(3) { 134.5f } to 50f
-                contentRows == 4 && numberRowFirst -> listOf(110f, 118f, 118f, 118f) to 22.5f
-                contentRows == 4 -> List(4) { 115.5f } to 23f
+                contentRows == 4 && numberRowFirst -> listOf(118f, 126f, 126f, 126f) to 17.5f
+                contentRows == 4 -> List(4) { 121f } to 17.5f
                 else -> {
                     val gap = 20f
                     val h = (REF_BLOCK_H - REF_BOTTOM_ROW_H - gap * contentRows) / contentRows
@@ -2577,7 +2577,7 @@ class DroidImeService : InputMethodService() {
             if (emojiPanelVisible) { layoutEmojiRows(rows, flat); return }
             if (editorPanelVisible) { layoutEditorRows(rows, flat); return }
             if (panelOpen()) { layoutClipRows(rows, flat); return }
-            val padX = dpf(6.7f)
+            val padX = dpf(2.2f)
             val padTop = dpf(STRIP_TOP_DP)
             val padBottom = dpf(8f) + navigationInset
             val availW = (width - padX * 2f).coerceAtLeast(1f)
@@ -2633,14 +2633,14 @@ class DroidImeService : InputMethodService() {
             val hasSelection = editorCells.any { (it.actionKey ?: it.label) == "Cut" }
             val left = dpf(10f)
             val right = (width - dpf(10f)).coerceAtLeast(left + 1f)
-            val gap = dpf(7f)
+            val gap = dpf(4.4f)
             val colW = ((right - left - gap * 3f) / 4f).coerceAtLeast(1f)
             // Gboard's key block starts right below the header band; no extra top/gap padding.
             val top = 0f
-            val headerH = dpf(42f)
+            val headerH = dpf(39.9f)
             val bodyTop = headerH
-            val bottom = (height - dpf(8f) - navigationInset).coerceAtLeast(bodyTop + 1f)
-            val footerH = dpf(54f)
+            val bottom = (height - dpf(1.6f) - navigationInset).coerceAtLeast(bodyTop + 1f)
+            val footerH = dpf(65.6f)
             val bodyBottom = bottom - footerH - gap
             val rowH = ((bodyBottom - bodyTop - gap * 2f) / 3f).coerceAtLeast(1f)
             fun place(label: String, column: Int, row: Int, spanRows: Int = 1) {
@@ -3155,7 +3155,9 @@ class DroidImeService : InputMethodService() {
                 val cx = cell.rect.centerX()
                 val cy = cell.rect.centerY()
                 iconFill.color = colors.panelKey
-                canvas.drawCircle(cx, cy, minOf(cell.rect.width(), cell.rect.height()) / 2f, iconFill)
+                canvas.drawCircle(
+                    cx, cy, minOf(cell.rect.width(), cell.rect.height()) * 0.4f, iconFill
+                )
                 iconStroke.color = ink
                 iconStroke.strokeWidth = dpf(2.5f)
                 iconStroke.strokeCap = Paint.Cap.ROUND
@@ -4070,13 +4072,13 @@ class DroidImeService : InputMethodService() {
         // Gboard reference geometry (1080px-wide screen): the key block is 678px tall with a
         // 124px bottom row, and each key is inset by ~6.7% of its row's unit width per side.
         private const val REF_BLOCK_H = 678f
-        private const val REF_BOTTOM_ROW_H = 124f
-        private const val KEY_INSET = 0.067f
+        private const val REF_BOTTOM_ROW_H = 131f
+        private const val KEY_INSET = 0.0946f
 
         // Top strip (tool icons / suggestions): 40dp band, keys start at 49dp, so the view is
         // 45dp taller than the configured key-area height.
         private const val STRIP_BAND_DP = 40f
-        private const val STRIP_TOP_DP = 49f
+        private const val STRIP_TOP_DP = 46f
         private const val STRIP_EXTRA_DP = 45
 
         // Thai characters a word cannot start with (vowel and tone marks, ะ า ำ ๅ ๆ ฯ).
